@@ -192,6 +192,12 @@ configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/acadosConfig.cmake.in
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cmake/acadosConfig.cmake
         DESTINATION cmake)
 
+
+# Install your custom Find files
+install(DIRECTORY ${PROJECT_SOURCE_DIR}/cmake/
+        DESTINATION cmake
+        FILES_MATCHING PATTERN "Find*.cmake")
+
 # set_target_properties(acados
 #     PROPERTIES SOVERSION ${PACKAGE_SO_VERSION})
 # export(TARGETS acados FILE ${PROJECT_BINARY_DIR}/acadosConfig.cmake)
