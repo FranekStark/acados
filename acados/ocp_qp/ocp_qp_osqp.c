@@ -40,14 +40,16 @@
 #include "acados/utils/types.h"
 
 // osqp
-#include "osqp/include/auxil.h"
-#include "osqp/include/constants.h"
-#include "osqp/include/glob_opts.h"
-#include "osqp/include/osqp.h"
-#include "osqp/include/scaling.h"
-#include "osqp/include/types.h"
-#include "osqp/include/util.h"
-#include "osqp/include/lin_sys.h"
+#include "osqp/include/private/auxil.h"
+#include "osqp/include/public/osqp_api_constants.h"
+#include "osqp/include/private/glob_opts.h"
+#include "osqp/include/public/osqp.h"
+#include "osqp/include/private/scaling.h"
+#include "osqp/include/private/types.h"
+#include "osqp/include/private/util.h"
+#include "osqp/include/private/lin_alg.h"
+
+#include "osqp/include/public/osqp_configure.h"
 
 
 
@@ -90,21 +92,21 @@
 
 
 
-static void cpy_vec(c_int n, c_float *from, c_float *to)
+static void cpy_vec(OSQPInt n, OSQPFloat *from, OSQPFloat *to)
 {
-    for (c_int ii = 0; ii < n; ii++) to[ii] = from[ii];
+    for (OSQPInt ii = 0; ii < n; ii++) to[ii] = from[ii];
 }
 
 
 
-static void cpy_int_vec(c_int n, c_int *from, c_int *to)
+static void cpy_int_vec(OSQPInt n, OSQPInt *from, OSQPInt *to)
 {
-    for (c_int ii = 0; ii < n; ii++) to[ii] = from[ii];
+    for (OSQPInt ii = 0; ii < n; ii++) to[ii] = from[ii];
 }
 
 
 
-static void init_csc_matrix(c_int m, c_int n, c_int nzmax, c_float *x, c_int *i, c_int *p, csc *M)
+static void init_csc_matrix(OSQPInt m, OSQPInt n, OSQPInt nzmax, OSQPFloat *x, OSQPInt *i, OSQPInt *p, OSQPCscMatrix *M)
 {
     M->m = m;
     M->n = n;
@@ -117,7 +119,7 @@ static void init_csc_matrix(c_int m, c_int n, c_int nzmax, c_float *x, c_int *i,
 
 
 
-static void cpy_csc_matrix(csc *from, csc *to)
+static void cpy_csc_matrix(OSQPCscMatrix *from, OSQPCscMatrix *to)
 {
     to->m = from->m;
     to->n = from->n;
@@ -130,16 +132,16 @@ static void cpy_csc_matrix(csc *from, csc *to)
 
 
 
-static void set_vec(c_int n, c_float val, c_float *vec)
+static void set_vec(OSQPInt n, OSQPFloat val, OSQPFloat *vec)
 {
-    for (c_int ii = 0; ii < n; ii++) vec[ii] = val;
+    for (OSQPInt ii = 0; ii < n; ii++) vec[ii] = val;
 }
 
 
 
-static void set_int_vec(c_int n, c_int val, c_int *vec)
+static void set_int_vec(OSQPInt n, OSQPInt val, OSQPInt *vec)
 {
-    for (c_int ii = 0; ii < n; ii++) vec[ii] = val;
+    for (OSQPInt ii = 0; ii < n; ii++) vec[ii] = val;
 }
 
 
@@ -160,12 +162,12 @@ static void cpy_osqp_settings(OSQPSettings *from, OSQPSettings *to)
     to->alpha = from->alpha;
     to->linsys_solver = from->linsys_solver;
     to->delta = from->delta;
-    to->polish = from->polish;
+    to->polishing = from->polishing;
     to->polish_refine_iter = from->polish_refine_iter;
     to->verbose = from->verbose;
     to->scaled_termination = from->scaled_termination;
     to->check_termination = from->check_termination;
-    to->warm_start = from->warm_start;
+    to->warm_starting = from->warm_starting;
 }
 
 
@@ -303,7 +305,7 @@ static void update_gradient(const ocp_qp_in *in, ocp_qp_osqp_memory *mem)
 
 static void update_hessian_structure(const ocp_qp_in *in, ocp_qp_osqp_memory *mem)
 {
-    c_int ii, jj, kk, nn = 0, offset = 0, col = 0;
+    OSQPInt ii, jj, kk, nn = 0, offset = 0, col = 0;
     ocp_qp_dims *dims = in->dim;
 
     // CSC format: P_i are row indices and P_p are column pointers
@@ -331,7 +333,7 @@ static void update_hessian_structure(const ocp_qp_in *in, ocp_qp_osqp_memory *me
 
 static void update_hessian_data(const ocp_qp_in *in, ocp_qp_osqp_memory *mem)
 {
-    c_int ii, jj, kk, nn = 0;
+    OSQPInt ii, jj, kk, nn = 0;
     ocp_qp_dims *dims = in->dim;
 
     // Traversing the matrix in column-major order
@@ -355,9 +357,9 @@ static void update_hessian_data(const ocp_qp_in *in, ocp_qp_osqp_memory *mem)
 
 static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_osqp_memory *mem)
 {
-    c_int ii, jj, kk, nn = 0, col = 0;
-    c_int con_start = 0, bnd_start = 0;
-    c_int row_offset_dyn = 0, row_offset_con = 0, row_offset_bnd = 0;
+    OSQPInt ii, jj, kk, nn = 0, col = 0;
+    OSQPInt con_start = 0, bnd_start = 0;
+    OSQPInt row_offset_dyn = 0, row_offset_con = 0, row_offset_bnd = 0;
     ocp_qp_dims *dims = in->dim;
 
     for (kk = 0; kk <= dims->N; kk++)
@@ -452,7 +454,7 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_osqp
 
 static void update_constraints_matrix_data(const ocp_qp_in *in, ocp_qp_osqp_memory *mem)
 {
-    c_int ii, jj, kk, nn = 0;
+    OSQPInt ii, jj, kk, nn = 0;
     ocp_qp_dims *dims = in->dim;
 
     // Traverse matrix in column-major order
@@ -636,9 +638,9 @@ void ocp_qp_osqp_opts_initialize_default(void *config_, void *dims_, void *opts_
 
     osqp_set_default_settings(opts->osqp_opts);
     opts->osqp_opts->verbose = 0;
-    opts->osqp_opts->polish = 1;
+    opts->osqp_opts->polishing = 1;
     opts->osqp_opts->check_termination = 5;
-    opts->osqp_opts->warm_start = 1;
+    opts->osqp_opts->warm_starting = 1;
 
     return;
 }
@@ -676,7 +678,7 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
 
         if (*tol <= 1e-3)
         {
-            opts->osqp_opts->polish = 1;
+            opts->osqp_opts->polishing = 1;
             opts->osqp_opts->polish_refine_iter = 5;
         }
     }
@@ -701,7 +703,7 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
         // XXX i.e. as it is, it gets permanently set to zero if warm start is disabled at the fist iteration !!!!!
         int *tmp_ptr = value;
         // int tmp_ptr[] = {1};
-        opts->osqp_opts->warm_start = *tmp_ptr;
+        opts->osqp_opts->warm_starting = *tmp_ptr;
         // printf("\nwarm start %d\n", opts->osqp_opts->warm_start);
     }
     else
@@ -725,64 +727,64 @@ static acados_size_t osqp_workspace_calculate_size(int n, int m, int P_nnzmax, i
 
     size += sizeof(OSQPWorkspace);
     size += sizeof(OSQPData);
-    size += 2 * sizeof(csc);
+    size += 2 * sizeof(OSQPCscMatrix);
 
-    size += 1 * n * sizeof(c_float);  // q
-    size += 2 * m * sizeof(c_float);  // l, u
+    size += 1 * n * sizeof(OSQPFloat);  // q
+    size += 2 * m * sizeof(OSQPFloat);  // l, u
 
-    size += P_nnzmax * sizeof(c_float);  // P_x
-    size += P_nnzmax * sizeof(c_int);    // P_i
-    size += (n + 1) * sizeof(c_int);     // P_p
+    size += P_nnzmax * sizeof(OSQPFloat);  // P_x
+    size += P_nnzmax * sizeof(OSQPInt);    // P_i
+    size += (n + 1) * sizeof(OSQPInt);     // P_p
 
-    size += A_nnzmax * sizeof(c_float);  // A_x
-    size += A_nnzmax * sizeof(c_int);    // A_i
-    size += (n + 1) * sizeof(c_int);     // A_p
+    size += A_nnzmax * sizeof(OSQPFloat);  // A_x
+    size += A_nnzmax * sizeof(OSQPInt);    // A_i
+    size += (n + 1) * sizeof(OSQPInt);     // A_p
 
-    size += 2 * m * sizeof(c_float);  // rho_vec, rho_inv_vec
-    size += m * sizeof(c_int);        // constr_type
+    size += 2 * m * sizeof(OSQPFloat);  // rho_vec, rho_inv_vec
+    size += m * sizeof(OSQPInt);        // constr_type
 
-    size += n * sizeof(c_float);        // x
-    size += m * sizeof(c_float);        // z
-    size += (n + m) * sizeof(c_float);  // xz_tilde
-    size += n * sizeof(c_float);        // x_prev
-    size += m * sizeof(c_float);        // z_prev
-    size += m * sizeof(c_float);        // y
+    size += n * sizeof(OSQPFloat);        // x
+    size += m * sizeof(OSQPFloat);        // z
+    size += (n + m) * sizeof(OSQPFloat);  // xz_tilde
+    size += n * sizeof(OSQPFloat);        // x_prev
+    size += m * sizeof(OSQPFloat);        // z_prev
+    size += m * sizeof(OSQPFloat);        // y
 
-    size += m * sizeof(c_float);  // Ax
-    size += n * sizeof(c_float);  // Px
-    size += n * sizeof(c_float);  // Aty
+    size += m * sizeof(OSQPFloat);  // Ax
+    size += n * sizeof(OSQPFloat);  // Px
+    size += n * sizeof(OSQPFloat);  // Aty
 
-    size += m * sizeof(c_float);  // delta_y
-    size += n * sizeof(c_float);  // Atdelta_y
+    size += m * sizeof(OSQPFloat);  // delta_y
+    size += n * sizeof(OSQPFloat);  // Atdelta_y
 
-    size += n * sizeof(c_float);  // delta_x
-    size += n * sizeof(c_float);  // Pdelta_x
-    size += m * sizeof(c_float);  // Adelta_x
+    size += n * sizeof(OSQPFloat);  // delta_x
+    size += n * sizeof(OSQPFloat);  // Pdelta_x
+    size += m * sizeof(OSQPFloat);  // Adelta_x
 
     size += sizeof(OSQPSettings);  // settings
 
     size += sizeof(OSQPScaling);  // scaling
-    size += n * sizeof(c_float);  // scaling->D
-    size += n * sizeof(c_float);  // scaling->Dinv
-    size += m * sizeof(c_float);  // scaling->E
-    size += m * sizeof(c_float);  // scaling->Einv
+    size += n * sizeof(OSQPFloat);  // scaling->D
+    size += n * sizeof(OSQPFloat);  // scaling->Dinv
+    size += m * sizeof(OSQPFloat);  // scaling->E
+    size += m * sizeof(OSQPFloat);  // scaling->Einv
 
-    size += n * sizeof(c_float);  // D_temp
-    size += n * sizeof(c_float);  // D_temp_A
-    size += m * sizeof(c_float);  // E_temp
+    size += n * sizeof(OSQPFloat);  // D_temp
+    size += n * sizeof(OSQPFloat);  // D_temp_A
+    size += m * sizeof(OSQPFloat);  // E_temp
 
     size += sizeof(OSQPPolish);   // pol
-    size += m * sizeof(c_int);    // pol->Alow_to_A
-    size += m * sizeof(c_int);    // pol->Aupp_to_A
-    size += m * sizeof(c_int);    // pol->A_to_Alow
-    size += m * sizeof(c_int);    // pol->A_to_Aupp
-    size += n * sizeof(c_float);  // pol->x
-    size += m * sizeof(c_float);  // pol->z
-    size += m * sizeof(c_float);  // pol->y
+    size += m * sizeof(OSQPInt);    // pol->Alow_to_A
+    size += m * sizeof(OSQPInt);    // pol->Aupp_to_A
+    size += m * sizeof(OSQPInt);    // pol->A_to_Alow
+    size += m * sizeof(OSQPInt);    // pol->A_to_Aupp
+    size += n * sizeof(OSQPFloat);  // pol->x
+    size += m * sizeof(OSQPFloat);  // pol->z
+    size += m * sizeof(OSQPFloat);  // pol->y
 
     size += sizeof(OSQPSolution);  // solution
-    size += n * sizeof(c_float);   // solution->x
-    size += m * sizeof(c_float);   // solution->y
+    size += n * sizeof(OSQPFloat);   // solution->x
+    size += m * sizeof(OSQPFloat);   // solution->y
 
     size += sizeof(OSQPInfo);  // info
 
@@ -805,19 +807,19 @@ acados_size_t ocp_qp_osqp_memory_calculate_size(void *config_, void *dims_, void
     acados_size_t size = 0;
     size += sizeof(ocp_qp_osqp_memory);
 
-    size += 1 * n * sizeof(c_float);  // q
-    size += 2 * m * sizeof(c_float);  // l, u
+    size += 1 * n * sizeof(OSQPFloat);  // q
+    size += 2 * m * sizeof(OSQPFloat);  // l, u
 
-    size += P_nnzmax * sizeof(c_float);  // P_x
-    size += P_nnzmax * sizeof(c_int);    // P_i
-    size += (n + 1) * sizeof(c_int);     // P_p
+    size += P_nnzmax * sizeof(OSQPFloat);  // P_x
+    size += P_nnzmax * sizeof(OSQPInt);    // P_i
+    size += (n + 1) * sizeof(OSQPInt);     // P_p
 
-    size += A_nnzmax * sizeof(c_float);  // A_x
-    size += A_nnzmax * sizeof(c_int);    // A_i
-    size += (n + 1) * sizeof(c_int);     // A_p
+    size += A_nnzmax * sizeof(OSQPFloat);  // A_x
+    size += A_nnzmax * sizeof(OSQPInt);    // A_i
+    size += (n + 1) * sizeof(OSQPInt);     // A_p
 
     size += sizeof(OSQPData);
-    size += 2 * sizeof(csc);  // matrices P and A
+    size += 2 * sizeof(OSQPCscMatrix);  // matrices P and A
     size += osqp_workspace_calculate_size(n, m, P_nnzmax, A_nnzmax);
 
     size += 1 * 8;
@@ -829,178 +831,178 @@ acados_size_t ocp_qp_osqp_memory_calculate_size(void *config_, void *dims_, void
 
 static void *osqp_workspace_assign(int n, int m, int P_nnzmax, int A_nnzmax, void *raw_memory)
 {
-    OSQPWorkspace *work;
+    OSQPSolver *solver;
 
     // char pointer
     char *c_ptr = (char *) raw_memory;
 
-    work = (OSQPWorkspace *) c_ptr;
-    c_ptr += sizeof(OSQPWorkspace);
+    solver = (OSQPSolver *) c_ptr;
+    c_ptr += sizeof(OSQPSolver);
 
-    work->data = (OSQPData *) c_ptr;
-    c_ptr += sizeof(OSQPData);
-
-    work->data->P = (csc *) c_ptr;
-    c_ptr += sizeof(csc);
-
-    work->data->A = (csc *) c_ptr;
-    c_ptr += sizeof(csc);
-
-    work->settings = (OSQPSettings *) c_ptr;
+    solver->settings = (OSQPSettings *) c_ptr;
     c_ptr += sizeof(OSQPSettings);
 
-    work->scaling = (OSQPScaling *) c_ptr;
+    solver->work->data = (OSQPData *) c_ptr;
+    c_ptr += sizeof(OSQPData);
+
+    solver->work->data->A = (OSQPMatrix *) c_ptr;
+    c_ptr += sizeof(OSQPMatrix);
+
+    solver->settings = (OSQPSettings *) c_ptr;
+    c_ptr += sizeof(OSQPSettings);
+
+    solver->work->scaling = (OSQPScaling *) c_ptr;
     c_ptr += sizeof(OSQPScaling);
 
-    work->pol = (OSQPPolish *) c_ptr;
+    solver->work->pol = (OSQPPolish *) c_ptr;
     c_ptr += sizeof(OSQPPolish);
 
-    work->solution = (OSQPSolution *) c_ptr;
+    solver->solution = (OSQPSolution *) c_ptr;
     c_ptr += sizeof(OSQPSolution);
 
-    work->info = (OSQPInfo *) c_ptr;
+    solver->info = (OSQPInfo *) c_ptr;
     c_ptr += sizeof(OSQPInfo);
 
     align_char_to(8, &c_ptr);
 
     // doubles
-    work->data->q = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->data->q = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPVectorf);
 
-    work->data->l = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->data->l = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->data->u = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->data->u = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->data->P->x = (c_float *) c_ptr;
-    c_ptr += P_nnzmax * sizeof(c_float);
+    solver->work->data->P->x = (OSQPFloat *) c_ptr;
+    c_ptr += P_nnzmax * sizeof(OSQPFloat);
 
-    work->data->A->x = (c_float *) c_ptr;
-    c_ptr += A_nnzmax * sizeof(c_float);
+    solver->work->data->A->x = (OSQPFloat *) c_ptr;
+    c_ptr += A_nnzmax * sizeof(OSQPFloat);
 
-    work->rho_vec = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->rho_vec = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->rho_inv_vec = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->rho_inv_vec = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->x = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->x = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->z = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->z = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->xz_tilde = (c_float *) c_ptr;
-    c_ptr += (n + m) * sizeof(c_float);
+    solver->work->xz_tilde = (OSQPVectorf *) c_ptr;
+    c_ptr += (n + m) * sizeof(OSQPFloat);
 
-    work->x_prev = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->x_prev = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->z_prev = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->z_prev = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->y = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->y = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->Ax = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->Ax = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->Px = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->Px = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->Aty = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->Aty = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->delta_y = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->delta_y = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->Atdelta_y = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->Atdelta_y = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->delta_x = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->delta_x = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->Pdelta_x = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->Pdelta_x = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->Adelta_x = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->Adelta_x = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->scaling->D = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->scaling->D = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->scaling->Dinv = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->scaling->Dinv = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->scaling->E = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->scaling->E = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->scaling->Einv = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->scaling->Einv = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->D_temp = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->D_temp = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->D_temp_A = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->D_temp_A = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->E_temp = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->E_temp = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->pol->x = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->work->pol->x = (OSQPVectorf *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->pol->z = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->pol->z = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->pol->y = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->work->pol->y = (OSQPVectorf *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    work->solution->x = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    solver->solution->x = (OSQPFloat *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    work->solution->y = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    solver->solution->y = (OSQPFloat *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
     // integers
 
-    work->data->P->i = (c_int *) c_ptr;
-    c_ptr += P_nnzmax * sizeof(c_int);
+    solver->work->data->P->i = (OSQPInt *) c_ptr;
+    c_ptr += P_nnzmax * sizeof(OSQPInt);
 
-    work->data->P->p = (c_int *) c_ptr;
-    c_ptr += (n + 1) * sizeof(c_int);
+    solver->work->data->P->p = (OSQPInt *) c_ptr;
+    c_ptr += (n + 1) * sizeof(OSQPInt);
 
-    work->data->A->i = (c_int *) c_ptr;
-    c_ptr += A_nnzmax * sizeof(c_int);
+    solver->work->data->A->i = (OSQPInt *) c_ptr;
+    c_ptr += A_nnzmax * sizeof(OSQPInt);
 
-    work->data->A->p = (c_int *) c_ptr;
-    c_ptr += (n + 1) * sizeof(c_int);
+    solver->work->data->A->p = (OSQPInt *) c_ptr;
+    c_ptr += (n + 1) * sizeof(OSQPInt);
 
-    work->constr_type = (c_int *) c_ptr;
-    c_ptr += m * sizeof(c_int);
+    solver->work->constr_type = (OSQPVectori *) c_ptr;
+    c_ptr += m * sizeof(OSQPInt);
 
-    work->pol->Alow_to_A = (c_int *) c_ptr;
-    c_ptr += m * sizeof(c_int);
+    solver->work->pol->Alow_to_A = (OSQPInt *) c_ptr;
+    c_ptr += m * sizeof(OSQPInt);
 
-    work->pol->Aupp_to_A = (c_int *) c_ptr;
-    c_ptr += m * sizeof(c_int);
+    solver->work->pol->Aupp_to_A = (OSQPInt *) c_ptr;
+    c_ptr += m * sizeof(OSQPInt);
 
-    work->pol->A_to_Alow = (c_int *) c_ptr;
-    c_ptr += m * sizeof(c_int);
+    solver->work->pol->A_to_Alow = (OSQPInt *) c_ptr;
+    c_ptr += m * sizeof(OSQPInt);
 
-    work->pol->A_to_Aupp = (c_int *) c_ptr;
-    c_ptr += m * sizeof(c_int);
+    solver->work->pol->A_to_Aupp = (OSQPInt *) c_ptr;
+    c_ptr += m * sizeof(OSQPInt);
 
-    return work;
+    return solver;
 }
 
 
 
 static int osqp_init_data(OSQPData *data, OSQPSettings *settings, OSQPWorkspace *work)
 {
-    c_int n = data->n;
-    c_int m = data->m;
+    OSQPInt n = data->n;
+    OSQPInt m = data->m;
 
     // Copy problem data into workspace
     work->data->n = n;
@@ -1135,33 +1137,33 @@ void *ocp_qp_osqp_memory_assign(void *config_, void *dims_, void *opts_, void *r
     align_char_to(8, &c_ptr);
 
     // doubles
-    mem->q = (c_float *) c_ptr;
-    c_ptr += n * sizeof(c_float);
+    mem->q = (OSQPFloat *) c_ptr;
+    c_ptr += n * sizeof(OSQPFloat);
 
-    mem->l = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    mem->l = (OSQPFloat *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    mem->u = (c_float *) c_ptr;
-    c_ptr += m * sizeof(c_float);
+    mem->u = (OSQPFloat *) c_ptr;
+    c_ptr += m * sizeof(OSQPFloat);
 
-    mem->P_x = (c_float *) c_ptr;
-    c_ptr += (mem->P_nnzmax) * sizeof(c_float);
+    mem->P_x = (OSQPFloat *) c_ptr;
+    c_ptr += (mem->P_nnzmax) * sizeof(OSQPFloat);
 
-    mem->A_x = (c_float *) c_ptr;
-    c_ptr += (mem->A_nnzmax) * sizeof(c_float);
+    mem->A_x = (OSQPFloat *) c_ptr;
+    c_ptr += (mem->A_nnzmax) * sizeof(OSQPFloat);
 
     // ints
-    mem->P_i = (c_int *) c_ptr;
-    c_ptr += (mem->P_nnzmax) * sizeof(c_int);
+    mem->P_i = (OSQPInt *) c_ptr;
+    c_ptr += (mem->P_nnzmax) * sizeof(OSQPInt);
 
-    mem->P_p = (c_int *) c_ptr;
-    c_ptr += (n + 1) * sizeof(c_int);
+    mem->P_p = (OSQPInt *) c_ptr;
+    c_ptr += (n + 1) * sizeof(OSQPInt);
 
-    mem->A_i = (c_int *) c_ptr;
-    c_ptr += (mem->A_nnzmax) * sizeof(c_int);
+    mem->A_i = (OSQPInt *) c_ptr;
+    c_ptr += (mem->A_nnzmax) * sizeof(OSQPInt);
 
-    mem->A_p = (c_int *) c_ptr;
-    c_ptr += (n + 1) * sizeof(c_int);
+    mem->A_p = (OSQPInt *) c_ptr;
+    c_ptr += (n + 1) * sizeof(OSQPInt);
 
     mem->osqp_data = (OSQPData *) c_ptr;
     c_ptr += sizeof(OSQPData);
@@ -1382,7 +1384,7 @@ int ocp_qp_osqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *m
     info->num_iter = mem->osqp_work->info->iter;
     info->t_computed = 1;
 
-    c_int osqp_status = mem->osqp_work->info->status_val;
+    OSQPInt osqp_status = mem->osqp_work->info->status_val;
     int acados_status = osqp_status;
 
     // check exit conditions

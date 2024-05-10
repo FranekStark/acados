@@ -37,7 +37,10 @@ extern "C" {
 #endif
 
 // osqp
-#include "osqp/include/types.h"
+#include "types.h"
+#include "osqp_api_types.h"
+
+//#include "algebra/builtin/algebra_impl.h"
 
 // acados
 #include "acados/ocp_qp/ocp_qp_common.h"
@@ -51,21 +54,21 @@ typedef struct ocp_qp_osqp_opts_
 
 typedef struct ocp_qp_osqp_memory_
 {
-    c_int first_run;
+    OSQPInt first_run;
 
-    c_float *q;
-    c_float *l;
-    c_float *u;
+    OSQPFloat *q;
+    OSQPFloat *l;
+    OSQPFloat *u;
 
-    c_int P_nnzmax;
-    c_int *P_i;
-    c_int *P_p;
-    c_float *P_x;
+    OSQPInt P_nnzmax;
+    OSQPInt *P_i;
+    OSQPInt *P_p;
+    OSQPFloat *P_x;
 
-    c_int A_nnzmax;
-    c_int *A_i;
-    c_int *A_p;
-    c_float *A_x;
+    OSQPInt A_nnzmax;
+    OSQPInt *A_i;
+    OSQPInt *A_p;
+    OSQPFloat *A_x;
 
     OSQPData *osqp_data;
     OSQPWorkspace *osqp_work;

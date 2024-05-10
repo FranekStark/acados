@@ -127,7 +127,9 @@ endif()
 
 if(ACADOS_WITH_OSQP)
     target_link_libraries(acados PUBLIC osqp)
-
+    target_include_directories(acados PUBLIC
+            $<BUILD_INTERFACE:${EXTERNAL_SRC_DIR}/osqp/include/public>
+            $<BUILD_INTERFACE:${EXTERNAL_SRC_DIR}/osqp/include/private>)
     target_compile_definitions(acados PUBLIC ACADOS_WITH_OSQP)
     # TODO(dimitris): needed or not?
     # target_compile_definitions(acados PUBLIC USE_ACADOS_TYPES)
