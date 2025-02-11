@@ -1027,6 +1027,7 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
         // opts->osqp_opts->eps_dual_inf = *tol;
 
         opts->osqp_opts->eps_rel = fmax(*tol, 1e-5);
+        opts->osqp_opts->eps_abs = fmax(*tol, 1e-5);
         opts->osqp_opts->eps_dual_inf = fmax(*tol, 1e-5);
 
         if (*tol <= 1e-3)
@@ -1049,6 +1050,10 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
     {
         // "OSQP always satisfies complementary slackness conditions
         //  with machine precision by construction." - Strellato2020
+    }
+    else if (!strcmp(field, "tol_dual_gap"))
+    {
+        // AFAIK OSQP does not check for the duality gap
     }
     else if (!strcmp(field, "warm_start"))
     {
