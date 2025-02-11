@@ -838,15 +838,22 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
 {
     ocp_qp_osqp_opts *opts = opts_;
 
-
-     if(!strcmp(field, "osqp_linsys_solver")){
+    // NOTE: settings are passed to OSQP at every call, via osqp_setup on the first call and
+    // osqp_update_settings afterwards; some settings can only be set before the first call,
+    // see the documentation of osqp_update_settings.
+    if(!strcmp(field, "osqp_linsys_solver")){
         const char *linsys_solver;
         linsys_solver = (const char *) value;
-        if (!strcmp(linsys_solver, "qdldl"))
+        if (!strcmp(linsys_solver, "qdldl")){
             opts->osqp_opts->linsys_solver = QDLDL_SOLVER;
-        else if (!strcmp(linsys_solver, "mkl pardiso"))
+        }
+        else if (!strcmp(linsys_solver, "mkl pardiso")){
             opts->osqp_opts->linsys_solver = MKL_PARDISO_SOLVER;
-        else opts->osqp_opts->linsys_solver = UNKNOWN_SOLVER;
+        }
+        else {
+            printf("\nerror: ocp_qp_osqp_opts_set: wrong value: %s\n", (const char *)value);
+            exit(1);
+        }    
     }
     else if (!strcmp(field, "iter_max"))
     {
