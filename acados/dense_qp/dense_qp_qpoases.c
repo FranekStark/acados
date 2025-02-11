@@ -160,6 +160,11 @@ void dense_qp_qpoases_opts_set(void *config_, void *opts_, const char *field, vo
         double *tol = value;
         opts->tolerance = MIN(opts->tolerance, *tol);
     }
+    else if (!strcmp(field, "tol_dual_gap"))
+    {
+        double *tol = value;
+        opts->tolerance = MIN(opts->tolerance, *tol);
+    }
     else if (!strcmp(field, "warm_start"))
     {
         int *warm_start = value;
