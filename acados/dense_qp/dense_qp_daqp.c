@@ -125,11 +125,16 @@ void dense_qp_daqp_opts_set(void *config_, void *opts_, const char *field, void 
     {
         double *tol = value;
         opts->daqp_opts->primal_tol = *tol;
+        opts->daqp_opts->dual_tol = *tol;
     }
     else if (!strcmp(field, "tol_comp"))
     {
         // Complementary slackness is implicitly
         // handled by the working set
+    }
+    else if (!strcmp(field, "dual_tol_gap"))
+    {
+        // AFAIK DAQP does not explicitly track the duality gap
     }
     else if (!strcmp(field, "iter_max"))
     {
