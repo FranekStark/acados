@@ -855,6 +855,10 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
             exit(1);
         }    
     }
+    if(!strcmp(field, "osqp_polish")){
+        int *polish = value; 
+        opts->osqp_opts->polishing = *polish;
+    }
     else if (!strcmp(field, "iter_max"))
     {
         int *tmp_ptr = value;
