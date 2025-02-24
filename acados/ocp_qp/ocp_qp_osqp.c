@@ -1028,7 +1028,7 @@ void ocp_qp_osqp_opts_set(void *config_, void *opts_, const char *field, void *v
         }
             
     }
-    if(!strcmp(field, "osqp_polish")){
+    else if(!strcmp(field, "osqp_polish")){
         int *polish = value; 
         opts->osqp_opts->polish = *polish;
     }
