@@ -42,4 +42,3 @@
 [submodule "external/Clarabel.cpp"]
 	path = external/Clarabel.cpp
 	url = https://github.com/jmiddelberg/Clarabel.cpp.git
-	branch = comparison_paper_V2
