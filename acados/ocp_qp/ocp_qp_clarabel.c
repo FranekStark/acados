@@ -33,7 +33,7 @@
 #include <string.h>
 
 // clarabel
-#include "Clarabel.cpp/include/clarabel.h"
+#include "Clarabel.cpp/include/Clarabel.h"
 
 // acados
 #include "acados/ocp_qp/ocp_qp_common.h"
