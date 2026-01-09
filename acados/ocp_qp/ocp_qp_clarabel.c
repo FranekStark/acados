@@ -840,6 +840,10 @@ void ocp_qp_clarabel_opts_set(void *config_, void *opts_, const char *field, voi
     {
         // do nothing
     }
+    else if (!strcmp(field, "tol_dual_gap"))
+    {
+        // do nothing
+    }
     else if (!strcmp(field, "warm_start"))
     {
         // do nothing
@@ -847,6 +851,33 @@ void ocp_qp_clarabel_opts_set(void *config_, void *opts_, const char *field, voi
     else if (!strcmp(field, "print_level"))
     {
         // TODO implement print_level
+    }
+    else if(!strcmp(field, "clarabel_mode"))
+    {
+        char *mode = value;
+        if(!strcmp(mode, "REDUCED_ACCURACY"))
+        {
+            opts->clarabel_opts->reduced_tol_gap_abs = 5e-5;
+            opts->clarabel_opts->reduced_tol_gap_rel = 5e-5;
+            opts->clarabel_opts->reduced_tol_feas = 1e-4;
+            opts->clarabel_opts->reduced_tol_infeas_abs = 5e-12;
+            opts->clarabel_opts->reduced_tol_infeas_rel = 5e-5;
+            opts->clarabel_opts->reduced_tol_ktratio = 1e-4;
+        }
+        else if(!strcmp(mode, "FULL_ACCURACY"))
+        {
+            opts->clarabel_opts->tol_gap_abs = 1e-8;
+            opts->clarabel_opts->tol_gap_rel = 1e-8;
+            opts->clarabel_opts->tol_feas = 1e-8;
+            opts->clarabel_opts->tol_infeas_abs = 1e-8;
+            opts->clarabel_opts->tol_infeas_rel = 1e-8;
+            opts->clarabel_opts->tol_ktratio = 1e-6;
+        }
+        else
+        {
+            printf("\nWARNING: ocp_qp_clarabel_opts_set: clarabel_mode: %s is unknown interfaced yet. Ignoring option and \n", field);
+            exit(1);
+        }
     }
     else
     {
