@@ -57,7 +57,7 @@
 {%- endif %}
 
 {%- if code_gen_options.acados_link_libs and code_gen_options.os and code_gen_options.os == "pc" %}{# acados linking libraries and flags #}
-    {%- set link_libs = code_gen_options.acados_link_libs.qpoases ~ " " ~ code_gen_options.acados_link_libs.hpmpc ~ " " ~ code_gen_options.acados_link_libs.osqp ~ " " ~ code_gen_options.acados_link_libs.daqp ~ " " ~ code_gen_options.acados_link_libs.clarabel -%}
+    {%- set link_libs = code_gen_options.acados_link_libs.qpoases ~ " " ~ code_gen_options.acados_link_libs.hpmpc ~ " " ~ code_gen_options.acados_link_libs.osqp ~ " " ~ code_gen_options.acados_link_libs.daqp ~ " " ~ code_gen_options.acados_link_libs.clarabel ~ " " ~ code_gen_options.acados_link_libs.proxqp -%}
     {%- set openmp_flag = code_gen_options.acados_link_libs.openmp %}
 {%- else %}
     {%- set openmp_flag = " " %}
@@ -67,6 +67,8 @@
         {%- set link_libs = "-ldaqp" %}
     {%- elif qp_solver == "PARTIAL_CONDENSING_CLARABEL" %}
         {%- set link_libs = "-lclarabel_c" %}
+    {%- elif qp_solver is containing("PROXQP") %}
+        {%- set link_libs = "-lproxsuite_c" %}
     {%- else %}
         {%- set link_libs = "" %}
     {%- endif %}
@@ -193,6 +195,9 @@ set(CMAKE_C_FLAGS "-fPIC -std=c99 {{ openmp_flag }} {{ code_gen_options.ext_fun_
 {%- endif -%}
 {%- if qp_solver == "PARTIAL_CONDENSING_CLARABEL" -%}
     -DACADOS_WITH_CLARABEL
+{%- endif %}
+{%- if qp_solver is containing("PROXQP") -%}
+    -DACADOS_WITH_PROXQP
 {%- endif -%}
 {%- if qp_solver == "PARTIAL_CONDENSING_QPDUNES" -%}
     -DACADOS_WITH_QPDUNES

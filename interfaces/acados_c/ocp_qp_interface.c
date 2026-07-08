@@ -84,6 +84,11 @@
 #include "acados/ocp_qp/ocp_qp_clarabel.h"
 #endif
 
+#ifdef ACADOS_WITH_PROXQP
+#include "acados/dense_qp/dense_qp_proxqp.h"
+#include "acados/ocp_qp/ocp_qp_proxqp.h"
+#endif
+
 
 
 
@@ -134,6 +139,13 @@ void ocp_qp_xcond_solver_config_initialize_from_plan(
             ocp_qp_partial_condensing_config_initialize_default(solver_config->xcond);
             break;
 #endif
+#ifdef ACADOS_WITH_PROXQP
+        case PARTIAL_CONDENSING_PROXQP:
+            ocp_qp_xcond_solver_config_initialize_default(solver_config);
+            ocp_qp_proxqp_config_initialize_default(solver_config->qp_solver);
+            ocp_qp_partial_condensing_config_initialize_default(solver_config->xcond);
+            break;
+#endif
         case FULL_CONDENSING_HPIPM:
             ocp_qp_xcond_solver_config_initialize_default(solver_config);
             dense_qp_hpipm_config_initialize_default(solver_config->qp_solver);
@@ -157,6 +169,13 @@ void ocp_qp_xcond_solver_config_initialize_from_plan(
         case FULL_CONDENSING_QORE:
             ocp_qp_xcond_solver_config_initialize_default(solver_config);
             dense_qp_qore_config_initialize_default(solver_config->qp_solver);
+            ocp_qp_full_condensing_config_initialize_default(solver_config->xcond);
+            break;
+#endif
+#ifdef ACADOS_WITH_PROXQP
+        case FULL_CONDENSING_PROXQP:
+            ocp_qp_xcond_solver_config_initialize_default(solver_config);
+            dense_qp_proxqp_config_initialize_default(solver_config->qp_solver);
             ocp_qp_full_condensing_config_initialize_default(solver_config->xcond);
             break;
 #endif
@@ -226,6 +245,16 @@ ocp_qp_xcond_solver_config *ocp_qp_xcond_solver_config_create_from_name(const ch
     else if (!strcmp(solver_name, "PARTIAL_CONDENSING_QPDUNES"))
     {
         plan.qp_solver = PARTIAL_CONDENSING_QPDUNES;
+    }
+#endif
+#ifdef ACADOS_WITH_PROXQP
+    else if (!strcmp(solver_name, "PARTIAL_CONDENSING_PROXQP"))
+    {
+        plan.qp_solver = PARTIAL_CONDENSING_PROXQP;
+    }
+    else if (!strcmp(solver_name, "FULL_CONDENSING_PROXQP"))
+    {
+        plan.qp_solver = FULL_CONDENSING_PROXQP;
     }
 #endif
 #ifdef ACADOS_WITH_QPOASES

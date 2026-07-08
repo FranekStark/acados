@@ -120,6 +120,10 @@ int main() {
     #ifndef ACADOS_WITH_CLARABEL
     ii_max--;
     #endif
+    #ifndef ACADOS_WITH_PROXQP
+    ii_max--;
+    ii_max--;
+    #endif
 
     // choose ocp qp solvers
     ocp_qp_solver_t ocp_qp_solvers[] =
@@ -155,6 +159,11 @@ int main() {
 
         #ifdef ACADOS_WITH_CLARABEL
         PARTIAL_CONDENSING_CLARABEL,
+        #endif
+
+        #ifdef ACADOS_WITH_PROXQP
+        PARTIAL_CONDENSING_PROXQP,
+        FULL_CONDENSING_PROXQP,
         #endif
     };
 
@@ -309,6 +318,17 @@ int main() {
                     printf("\nPartial condensing + Clarabel (N2 = %d):\n\n", N2);
                     N2 = N2_values[jj];
                     config->opts_set(config, opts, "cond_N", &N2);
+                    break;
+#endif
+#ifdef ACADOS_WITH_PROXQP
+                case PARTIAL_CONDENSING_PROXQP:
+                    printf("\nPartial condensing + ProxQP (N2 = %d):\n\n", N2);
+                    N2 = N2_values[jj];
+                    config->opts_set(config, opts, "cond_N", &N2);
+                    break;
+
+                case FULL_CONDENSING_PROXQP:
+                    printf("\nFull condensing + ProxQP:\n\n");
                     break;
 #endif
                 case INVALID_QP_SOLVER:

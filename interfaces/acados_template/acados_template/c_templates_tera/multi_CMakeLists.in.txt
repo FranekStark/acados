@@ -49,7 +49,7 @@
 {%- endif %}
 
 {%- if code_gen_options.acados_link_libs and code_gen_options.os and code_gen_options.os == "pc" %}{# acados linking libraries and flags #}
-    {%- set link_libs = code_gen_options.acados_link_libs.qpoases ~ " " ~ code_gen_options.acados_link_libs.hpmpc ~ " " ~ code_gen_options.acados_link_libs.osqp ~ " " ~ code_gen_options.acados_link_libs.daqp -%}
+    {%- set link_libs = code_gen_options.acados_link_libs.qpoases ~ " " ~ code_gen_options.acados_link_libs.hpmpc ~ " " ~ code_gen_options.acados_link_libs.osqp ~ " " ~ code_gen_options.acados_link_libs.daqp ~ " " ~ code_gen_options.acados_link_libs.proxqp -%}
     {%- set openmp_flag = code_gen_options.acados_link_libs.openmp %}
 {%- else %}
     {%- set openmp_flag = " " %}
@@ -308,6 +308,9 @@ set(CMAKE_C_FLAGS "-fPIC -std=c99 {{ openmp_flag }} {{ code_gen_options.ext_fun_
 {%- endif -%}
 {%- if solver_options.qp_solver == "PARTIAL_CONDENSING_OSQP" -%}
     -DACADOS_WITH_OSQP
+{%- endif -%}
+{%- if solver_options.qp_solver is containing("PROXQP") -%}
+    -DACADOS_WITH_PROXQP
 {%- endif -%}
 {%- if solver_options.qp_solver == "PARTIAL_CONDENSING_QPDUNES" -%}
     -DACADOS_WITH_QPDUNES

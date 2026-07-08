@@ -42,3 +42,7 @@
 [submodule "external/Clarabel.cpp"]
 	path = external/Clarabel.cpp
 	url = https://github.com/acados/Clarabel.cpp.git
+[submodule "external/proxsuite"]
+	path = external/proxsuite
+	url = https://github.com/FranekStark/proxsuite.git
+	branch = fix/dense-box-i-scaled-not-reset-on-keep
