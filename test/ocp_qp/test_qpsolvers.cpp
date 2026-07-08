@@ -70,6 +70,10 @@ ocp_qp_solver_t hashit(std::string const &inString)
 #ifdef ACADOS_WITH_OSQP
     if (inString == "SPARSE_OSQP") return PARTIAL_CONDENSING_OSQP;
 #endif
+#ifdef ACADOS_WITH_PROXQP
+    if (inString == "DENSE_PROXQP") return FULL_CONDENSING_PROXQP;
+    if (inString == "SPARSE_PROXQP") return PARTIAL_CONDENSING_PROXQP;
+#endif
 #ifdef ACADOS_WITH_QORE
     if (inString == "DENSE_QORE") return FULL_CONDENSING_QORE;
 #endif
@@ -90,6 +94,8 @@ double solver_tolerance(std::string const &inString)
     if (inString == "SPARSE_OOQP") return 1e-5;
     if (inString == "DENSE_OOQP") return 1e-5;
     if (inString == "SPARSE_OSQP") return 1e-8;
+    if (inString == "DENSE_PROXQP") return 1e-5;
+    if (inString == "SPARSE_PROXQP") return 1e-5;
 
     return -1;
 }
@@ -100,7 +106,7 @@ void set_N2(std::string const &inString, ocp_qp_xcond_solver_config *config, voi
 {
     bool option_found = false;
 
-    if ( inString=="SPARSE_HPIPM" | inString=="SPARSE_HPMPC" | inString == "SPARSE_OOQP" | inString == "SPARSE_OSQP" )
+    if ( inString=="SPARSE_HPIPM" | inString=="SPARSE_HPMPC" | inString == "SPARSE_OOQP" | inString == "SPARSE_OSQP" | inString == "SPARSE_PROXQP" )
     {
 		config->opts_set(config, opts, "cond_N", &N2);
     }
@@ -108,6 +114,13 @@ void set_N2(std::string const &inString, ocp_qp_xcond_solver_config *config, voi
     if (inString == "SPARSE_QPDUNES")
     {
 		config->opts_set(config, opts, "cond_N", &N2);
+    }
+
+    if ( inString == "SPARSE_PROXQP" | inString == "DENSE_PROXQP" )
+    {
+        // tighten the ProxQP tolerance (default 1e-5) to meet the test tolerance
+        double tol_stat = 1e-9;
+        config->opts_set(config, opts, "tol_stat", &tol_stat);
     }
 
 }
@@ -141,6 +154,11 @@ TEST_CASE("mass spring example", "[QP solvers]")
 #ifdef ACADOS_WITH_OSQP
                                    ,
                                    "SPARSE_OSQP"
+#endif
+#ifdef ACADOS_WITH_PROXQP
+                                   ,
+                                   "DENSE_PROXQP",
+                                   "SPARSE_PROXQP"
 #endif
 #ifdef ACADOS_WITH_QORE
                                    ,

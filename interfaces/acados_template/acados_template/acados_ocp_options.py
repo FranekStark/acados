@@ -179,6 +179,7 @@ class AcadosOcpOptions:
             'PARTIAL_CONDENSING_QPDUNES',
             'PARTIAL_CONDENSING_OSQP',
             'PARTIAL_CONDENSING_CLARABEL',
+            'PARTIAL_CONDENSING_PROXQP',
             'FULL_CONDENSING_DAQP')
 
         Default: 'PARTIAL_CONDENSING_HPIPM'.
@@ -243,6 +244,7 @@ class AcadosOcpOptions:
         qp_solvers = ('PARTIAL_CONDENSING_HPIPM', \
                 'FULL_CONDENSING_QPOASES', 'FULL_CONDENSING_HPIPM', \
                 'PARTIAL_CONDENSING_QPDUNES', 'PARTIAL_CONDENSING_OSQP', 'PARTIAL_CONDENSING_CLARABEL', \
+                'PARTIAL_CONDENSING_PROXQP', 'FULL_CONDENSING_PROXQP', \
                 'FULL_CONDENSING_DAQP')
         if qp_solver in qp_solvers:
             self.__qp_solver = qp_solver
@@ -2406,6 +2408,7 @@ class AcadosOcpQpOptions:
             'PARTIAL_CONDENSING_QPDUNES',
             'PARTIAL_CONDENSING_OSQP',
             'PARTIAL_CONDENSING_CLARABEL',
+            'PARTIAL_CONDENSING_PROXQP',
             'FULL_CONDENSING_DAQP')
 
         Default: 'PARTIAL_CONDENSING_HPIPM'.
@@ -2470,6 +2473,7 @@ class AcadosOcpQpOptions:
         qp_solvers = ('PARTIAL_CONDENSING_HPIPM', \
                 'FULL_CONDENSING_QPOASES', 'FULL_CONDENSING_HPIPM', \
                 'PARTIAL_CONDENSING_QPDUNES', 'PARTIAL_CONDENSING_OSQP', 'PARTIAL_CONDENSING_CLARABEL', \
+                'PARTIAL_CONDENSING_PROXQP', 'FULL_CONDENSING_PROXQP', \
                 'FULL_CONDENSING_DAQP')
         if qp_solver in qp_solvers:
             self.__qp_solver = qp_solver

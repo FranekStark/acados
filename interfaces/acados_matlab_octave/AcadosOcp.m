@@ -1123,7 +1123,7 @@ classdef AcadosOcp < handle
             end
 
             % sanity checks on options, which are done in setters in Python
-            qp_solvers = {'PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_QPOASES', 'FULL_CONDENSING_HPIPM', 'PARTIAL_CONDENSING_QPDUNES', 'PARTIAL_CONDENSING_OSQP', 'FULL_CONDENSING_DAQP'};
+            qp_solvers = {'PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_QPOASES', 'FULL_CONDENSING_HPIPM', 'PARTIAL_CONDENSING_QPDUNES', 'PARTIAL_CONDENSING_OSQP', 'FULL_CONDENSING_DAQP', 'PARTIAL_CONDENSING_PROXQP', 'FULL_CONDENSING_PROXQP'};
             if ~ismember(opts.qp_solver, qp_solvers)
                 error(['Invalid qp_solver: ', opts.qp_solver, '. Available options are: ', strjoin(qp_solvers, ', ')]);
             end

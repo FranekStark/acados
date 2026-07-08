@@ -105,6 +105,7 @@ codegen_sim*
 *.swp
 build/
 include/
+!external/proxsuite_c/include/
 lib/
 bin/
 local/

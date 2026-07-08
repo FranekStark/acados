@@ -70,6 +70,11 @@ if(NOT ACADOS_WITH_CLARABEL)
     list(REMOVE_ITEM ACADOS_SRC "${PROJECT_SOURCE_DIR}/acados/ocp_qp/ocp_qp_clarabel.c")
 endif()
 
+if(NOT ACADOS_WITH_PROXQP)
+    list(REMOVE_ITEM ACADOS_SRC "${PROJECT_SOURCE_DIR}/acados/dense_qp/dense_qp_proxqp.c")
+    list(REMOVE_ITEM ACADOS_SRC "${PROJECT_SOURCE_DIR}/acados/ocp_qp/ocp_qp_proxqp.c")
+endif()
+
 # Define acados library
 add_library(acados ${ACADOS_SRC})
 
@@ -147,6 +152,12 @@ if(ACADOS_WITH_CLARABEL)
     target_compile_definitions(acados PUBLIC ACADOS_WITH_CLARABEL)
 endif()
 
+if(ACADOS_WITH_PROXQP)
+    target_link_libraries(acados PUBLIC proxsuite_c)
+
+    target_compile_definitions(acados PUBLIC ACADOS_WITH_PROXQP)
+endif()
+
 if(ACADOS_WITH_OOQP)
     target_compile_definitions(acados PUBLIC ACADOS_WITH_OOQP)
     target_link_libraries(acados PUBLIC ooqp)
@@ -197,6 +208,7 @@ configure_package_config_file(${PROJECT_SOURCE_DIR}/cmake/acadosConfig.cmake.in
                                         ACADOS_WITH_QPDUNES
                                         ACADOS_WITH_OSQP
                                         ACADOS_WITH_CLARABEL
+                                        ACADOS_WITH_PROXQP
                                         ACADOS_WITH_OOQP)
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/cmake/acadosConfig.cmake

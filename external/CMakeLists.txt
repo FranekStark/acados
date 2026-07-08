@@ -102,6 +102,10 @@ if(ACADOS_WITH_CLARABEL)
     add_dependencies(acados libclarabel_c_shared)
 endif()
 
+if(ACADOS_WITH_PROXQP)
+    add_subdirectory(proxsuite_c)
+endif()
+
 if (ACADOS_WITH_OOQP)
     include(external/ooqp)
 endif()

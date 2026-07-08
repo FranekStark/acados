@@ -93,6 +93,11 @@ option(ACADOS_WITH_OOQP "OOQP solver" OFF)
 option(ACADOS_WITH_QPDUNES "qpDUNES solver" OFF)
 option(ACADOS_WITH_OSQP "OSQP solver" OFF)
 option(ACADOS_WITH_CLARABEL "Clarabel solver" OFF)
+option(ACADOS_WITH_PROXQP "ProxQP solver" OFF)
+# OFF by default on purpose: ProxQP's SIMD kernels are only faster if the compiler is
+# also told that the target supports the corresponding instructions. Enabling the kernels
+# without matching architecture flags makes ProxQP measurably SLOWER than the scalar path.
+option(ACADOS_PROXQP_VECTORIZE "Use the SIMD kernels of ProxQP (needs simde)" OFF)
 # Interfaces
 option(ACADOS_OCTAVE "Octave Interface tests" OFF)
 # Options to use libraries found via find_package
@@ -227,6 +232,7 @@ if(CMAKE_BUILD_TYPE MATCHES WithExternalLibs)
     set(ACADOS_WITH_QPDUNES ON CACHE BOOL "Add qpDUNES solver")
     set(ACADOS_WITH_OSQP ON CACHE BOOL "Add OSQP solver")
     set(ACADOS_WITH_CLARABEL ON CACHE BOOL "Add Clarabel solver")
+    set(ACADOS_WITH_PROXQP ON CACHE BOOL "Add ProxQP solver")
 endif()
 
 ## External lib checks (
@@ -345,6 +351,9 @@ endif()
 if(${ACADOS_WITH_CLARABEL})
     set(LINK_FLAG_CLARABEL -lclarabel_c)
 endif()
+if(${ACADOS_WITH_PROXQP})
+    set(LINK_FLAG_PROXQP -lproxsuite_c)
+endif()
 # if(${ACADOS_WITH_QORE})
 #     set(LINK_FLAG_QORE -lqore)
 # endif()
@@ -375,6 +384,7 @@ file(APPEND lib/link_libs.json \t\"daqp\":\ \"${LINK_FLAG_DAQP}\",\n)
 file(APPEND lib/link_libs.json \t\"qpdunes\":\ \"${LINK_FLAG_QPDUNES}\",\n)
 file(APPEND lib/link_libs.json \t\"osqp\":\ \"${LINK_FLAG_OSQP}\",\n)
 file(APPEND lib/link_libs.json \t\"clarabel\":\ \"${LINK_FLAG_CLARABEL}\",\n)
+file(APPEND lib/link_libs.json \t\"proxqp\":\ \"${LINK_FLAG_PROXQP}\",\n)
 file(APPEND lib/link_libs.json \t\"hpmpc\":\ \"${LINK_FLAG_HPMPC}\",\n)
 # file(APPEND lib/link_libs.json \t\"qore\":\ \"${LINK_FLAG_QORE}\",\n)
 file(APPEND lib/link_libs.json \t\"ooqp\":\ \"${LINK_FLAG_OOQP}\"\n) # no final comma!
