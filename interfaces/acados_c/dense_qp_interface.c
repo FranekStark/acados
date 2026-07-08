@@ -34,6 +34,9 @@
 #ifdef ACADOS_WITH_OOQP
 #include "acados/dense_qp/dense_qp_ooqp.h"
 #endif
+#ifdef ACADOS_WITH_PROXQP
+#include "acados/dense_qp/dense_qp_proxqp.h"
+#endif
 
 qp_solver_config *dense_qp_config_create(dense_qp_solver_plan *plan)
 {
@@ -66,6 +69,11 @@ qp_solver_config *dense_qp_config_create(dense_qp_solver_plan *plan)
 #ifdef ACADOS_WITH_OOQP
         case DENSE_QP_OOQP:
             dense_qp_ooqp_config_initialize_default(solver_config);
+            break;
+#endif
+#ifdef ACADOS_WITH_PROXQP
+        case DENSE_QP_PROXQP:
+            dense_qp_proxqp_config_initialize_default(solver_config);
             break;
 #endif
         default:

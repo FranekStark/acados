@@ -15,6 +15,7 @@ env:
   ACADOS_WITH_DAQP: ON
   ACADOS_WITH_QPDUNES: ON
   ACADOS_WITH_CLARABEL: ON
+  ACADOS_WITH_PROXQP: ON
   ACADOS_ON_CI: ON
 
 
@@ -67,8 +68,8 @@ jobs:
             'interfaces/acados_c/**'
           ) }}
 
-    - name: Install Eigen3, for clarabel
-      if: env.ACADOS_WITH_CLARABEL == 'ON'
+    - name: Install Eigen3, for clarabel and proxqp
+      if: env.ACADOS_WITH_CLARABEL == 'ON' || env.ACADOS_WITH_PROXQP == 'ON'
       run: sudo apt-get update && sudo apt-get install -y libeigen3-dev
 
     - name: Create Build Environment & Configure
@@ -82,6 +83,7 @@ jobs:
             -DACADOS_WITH_QPDUNES=$ACADOS_WITH_QPDUNES \
             -DACADOS_WITH_OSQP=$ACADOS_WITH_OSQP \
             -DACADOS_WITH_CLARABEL=$ACADOS_WITH_CLARABEL \
+            -DACADOS_WITH_PROXQP=$ACADOS_WITH_PROXQP \
             -DACADOS_OCTAVE=OFF \
             -DACADOS_WITH_OPENMP=ON \
             -DACADOS_NUM_THREADS=1
