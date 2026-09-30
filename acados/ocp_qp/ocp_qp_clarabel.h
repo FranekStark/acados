@@ -50,6 +50,16 @@ typedef struct ocp_qp_clarabel_opts_
     ClarabelDefaultSettings *clarabel_opts;
     int print_level;
     int first_run;
+    // a constraint side whose bound satisfies |bound| >= inf_bound is treated as absent
+    double inf_bound;
+    // tolerances requested through the generic acados fields, <= 0 means not requested.
+    // Clarabel has one feasibility tolerance (min of stat/eq/ineq) and one gap tolerance
+    // (min of comp/dual_gap); requested values override the clarabel_mode preset.
+    double tol_stat;
+    double tol_eq;
+    double tol_ineq;
+    double tol_comp;
+    double tol_dual_gap;
 
 } ocp_qp_clarabel_opts;
 
@@ -76,11 +86,36 @@ typedef struct ocp_qp_clarabel_memory_
     uintptr_t b_nnz;
 
     ClarabelSupportedConeT cones[2];
+    int num_cones;
+
+    // sparsity pattern: union of all nonzeros seen so far, one flag per dense entry
+    char *P_mask;   // per stage: triu(RSQ), column-major
+    char *BA_mask;  // per stage k<N: [B A]^T, (nu+nx) x nx[k+1], row-major
+    char *DC_mask;  // per stage: [D C]^T, (nu+nx) x ng, row-major
+    // per stage [lower sides (nb+ng), upper sides (nb+ng)]: bound was finite at least once
+    char *d_finite;
+    // per stage (nb+ng): constraint is an equality (idxe)
+    char *is_eq;
+    // per stage (nb+ng): Clarabel row of the lower / upper side, -1 if not emitted.
+    // For equalities both point to the single ZeroCone row.
+    int *row_lo;
+    int *row_up;
+    int m;          // number of rows actually emitted
+    int m_eq;       // leading rows in the ZeroCone
+    int slk_start;  // first row of the slack nonnegativity constraints
+    int num_rebuilds;
+
+    // unpack buffers
+    double *work_row;
+    double *work_d;
+    double *work_d_mask;
+    double *work_lam;
 
     ClarabelDefaultSolver *solver;
     ClarabelDefaultSolution solution;
 
     double time_qp_solver_call;
+    double clarabel_solve_time;  // Clarabel's own timer for the last solve
     int iter;
     int status;
 
