@@ -47,13 +47,18 @@ typedef struct ocp_qp_osqp_opts_
 {
     OSQPSettings *osqp_opts;
     int print_level;
+    // tolerances requested through the generic acados fields, <= 0 means not requested.
+    // OSQP checks the primal residual, the dual residual and the duality gap against the same
+    // eps_abs and eps_rel, so both are set to the min of stat/eq/ineq/dual_gap.
+    double tol_stat;
+    double tol_eq;
+    double tol_ineq;
+    double tol_dual_gap;
 } ocp_qp_osqp_opts;
 
 
 typedef struct ocp_qp_osqp_memory_
 {
-    OSQPInt first_run;
-
     OSQPFloat *q;
     OSQPFloat *l;
     OSQPFloat *u;
@@ -71,6 +76,18 @@ typedef struct ocp_qp_osqp_memory_
     OSQPCscMatrix *P;
     OSQPCscMatrix *A;
     OSQPSolver *osqp_solver;
+
+    // sparsity pattern: union of all nonzeros seen so far, one flag per dense entry
+    char *P_mask;   // per stage: triu(RSQ), column-major
+    char *BA_mask;  // per stage k<N: [B A]^T, (nu+nx) x nx[k+1], row-major
+    char *DC_mask;  // per stage: [D C]^T, (nu+nx) x ng, row-major
+    int num_rebuilds;
+
+    // unpack buffer for one row of RSQ, BAbt or DCt
+    double *work_row;
+    // last solution, to warm start a rebuilt solver
+    OSQPFloat *x_prev;
+    OSQPFloat *y_prev;
 
     double time_qp_solver_call;
     int iter;
