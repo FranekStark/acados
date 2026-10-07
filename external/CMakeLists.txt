@@ -120,6 +120,16 @@ if(ACADOS_WITH_CLARABEL)
     set_property(TARGET libclarabel_c_shared PROPERTY INTERFACE_LINK_LIBRARIES
         "$<BUILD_INTERFACE:${CLARABEL_C_OUTPUT_DIR}/libclarabel_c.so>"
         "$<INSTALL_INTERFACE:${CMAKE_INSTALL_PREFIX}/lib/libclarabel_c.so>")
+
+    # Clarabel.cpp carries no install rules at all, so libclarabel_c.so is installed
+    # above but the headers it belongs to stay behind in the source tree. A consumer
+    # of the installed prefix that wants to call Clarabel itself - a whole-body
+    # controller with its own Clarabel solver, say - then has to take them from a
+    # second checkout, which is precisely how two copies drift apart. Install the
+    # tree next to the library instead. The layout matches what Clarabel.cpp's own
+    # README suggests, so -DCLARABEL_ROOT=<acados prefix> is enough to find both.
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/Clarabel.cpp/include/"
+            DESTINATION include/clarabel)
 endif()
 
 if(ACADOS_WITH_PROXQP)
