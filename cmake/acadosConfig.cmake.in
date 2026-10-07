@@ -92,7 +92,12 @@ if(ACADOS_WITH_DAQP)
 endif()
 
 if(ACADOS_WITH_CLARABEL)
-    find_package(clarabel_c)
+    # Clarabel.cpp installs its targets as the "Clarabel" export set rather than
+    # as a clarabel_c package config, so find_package(clarabel_c) can never
+    # define libclarabel_c_shared, which acadosTargets.cmake requires.
+    if(NOT TARGET libclarabel_c_shared AND EXISTS "${CMAKE_CURRENT_LIST_DIR}/Clarabel.cmake")
+        include("${CMAKE_CURRENT_LIST_DIR}/Clarabel.cmake")
+    endif()
 endif()
 
 if(ACADOS_WITH_OSQP)

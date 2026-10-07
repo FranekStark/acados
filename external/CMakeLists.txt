@@ -95,11 +95,31 @@ endif()
 
 if(ACADOS_WITH_CLARABEL)
     set(CLARABEL_BUILD_EXAMPLES OFF CACHE BOOL "set Clarabel examples" FORCE)
-    set(CLARABEL_C_OUTPUT_DIR "${CMAKE_INSTALL_PREFIX}/build/external/Clarabel.cpp" CACHE STRING "Set Clarabel.cpp output dir" FORCE)
+    # The cargo artifacts belong in the build tree. Deriving this from
+    # CMAKE_INSTALL_PREFIX only happens to work while ACADOS_INSTALL_DIR is left
+    # at its default (the acados source dir); with any other install prefix it
+    # points at a directory that does not exist at build time.
+    set(CLARABEL_C_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/Clarabel.cpp" CACHE STRING "Set Clarabel.cpp output dir" FORCE)
+    file(MAKE_DIRECTORY "${CLARABEL_C_OUTPUT_DIR}")
     set(PROFILING OFF CACHE BOOL "Turn off profiling in CLARABEL")
     set(CTRLC OFF CACHE BOOL "Turn off CTRLC in CLARABEL")
     add_subdirectory(Clarabel.cpp)
     add_dependencies(acados libclarabel_c_shared)
+
+    # Clarabel's interface targets carry a source-tree include dir and a
+    # build-tree library path. Both are part of the acados link interface, so
+    # install(EXPORT) rejects them as soon as the install prefix lives outside
+    # the source tree. Restrict them to the build interface and point the
+    # install interface at the installed library instead.
+    foreach(_clarabel_target libclarabel_c_shared libclarabel_c_static)
+        if(TARGET ${_clarabel_target})
+            set_property(TARGET ${_clarabel_target} PROPERTY INTERFACE_INCLUDE_DIRECTORIES
+                "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/Clarabel.cpp/include>")
+        endif()
+    endforeach()
+    set_property(TARGET libclarabel_c_shared PROPERTY INTERFACE_LINK_LIBRARIES
+        "$<BUILD_INTERFACE:${CLARABEL_C_OUTPUT_DIR}/libclarabel_c.so>"
+        "$<INSTALL_INTERFACE:${CMAKE_INSTALL_PREFIX}/lib/libclarabel_c.so>")
 endif()
 
 if(ACADOS_WITH_PROXQP)
