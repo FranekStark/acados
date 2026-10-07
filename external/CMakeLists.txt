@@ -84,6 +84,20 @@ if(ACADOS_WITH_DAQP)
     set(PROFILING OFF CACHE BOOL "Turn off profiling in DAQP")
     set(SOFT_WEIGHTS ON CACHE BOOL "Turn on soft weights in DAQP")
     add_subdirectory(daqp)
+
+    # SOFT_WEIGHTS changes the layout of DAQPWorkspace, but DAQP applies it with
+    # a directory-scoped add_compile_definitions() that install(EXPORT) does not
+    # record, so consumers of the installed package silently get the other
+    # layout. Carry it on the interface instead. Install interface only: acados'
+    # own dense_qp_daqp.c already defines the macro itself, and defining it on
+    # the command line too would warn on every compile of that file.
+    foreach(_daqp_target daqp daqpstat)
+        if(TARGET ${_daqp_target})
+            set_property(TARGET ${_daqp_target} APPEND
+                         PROPERTY INTERFACE_COMPILE_DEFINITIONS
+                         $<INSTALL_INTERFACE:SOFT_WEIGHTS>)
+        endif()
+    endforeach()
 endif()
 
 if(ACADOS_WITH_OSQP)
