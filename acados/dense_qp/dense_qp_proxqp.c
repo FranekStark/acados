@@ -394,6 +394,7 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
 
     int ng2, nv2, nb2;
     int *idxb2;
+    dense_qp_in *qp_solve;  // qp whose bounds are passed to ProxQP
 
     double inf = proxqp_c_infinity();
 
@@ -412,6 +413,7 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
         nv2 = qp_stacked->dim->nv;
         nb2 = qp_stacked->dim->nb;
         idxb2 = mem->idxb_stacked;
+        qp_solve = qp_stacked;
 
         dense_qp_stack_slacks(qp_in, qp_stacked);
         d_dense_qp_get_all(qp_stacked, mem->H, mem->g, mem->A, mem->b, idxb2, mem->d_lb0,
@@ -424,26 +426,34 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
         nv2 = nv;
         nb2 = nb;
         idxb2 = mem->idxb;
+        qp_solve = qp_in;
 
         d_dense_qp_get_all(qp_in, mem->H, mem->g, mem->A, mem->b, mem->idxb, mem->d_lb0,
                            mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, mem->Zl, mem->Zu, mem->zl,
                            mem->zu, mem->idxs, mem->idxs_rev, mem->d_ls, mem->d_us);
+    }
 
-        // ignore bounds and constraints that are masked out in qp_in via d_mask
-        // NOTE: with soft constraints (ns > 0) masks are only applied to the multipliers
-        for (int ii = 0; ii < nb; ii++)
+    // ignore bounds and constraints that are masked out via d_mask
+    for (int ii = 0; ii < nb2; ii++)
+    {
+        if (BLASFEO_DVECEL(qp_solve->d_mask, ii) == 0.0)
         {
-            if (BLASFEO_DVECEL(qp_in->d_mask, ii) == 0.0)
-                mem->d_lb0[ii] = -inf;
-            if (BLASFEO_DVECEL(qp_in->d_mask, nb + ng + ii) == 0.0)
-                mem->d_ub0[ii] = +inf;
+            mem->d_lb0[ii] = -inf;
         }
-        for (int ii = 0; ii < ng; ii++)
+        if (BLASFEO_DVECEL(qp_solve->d_mask, nb2 + ng2 + ii) == 0.0)
         {
-            if (BLASFEO_DVECEL(qp_in->d_mask, nb + ii) == 0.0)
-                mem->d_lg[ii] = -inf;
-            if (BLASFEO_DVECEL(qp_in->d_mask, 2 * nb + ng + ii) == 0.0)
-                mem->d_ug[ii] = +inf;
+            mem->d_ub0[ii] = +inf;
+        }
+    }
+    for (int ii = 0; ii < ng2; ii++)
+    {
+        if (BLASFEO_DVECEL(qp_solve->d_mask, nb2 + ii) == 0.0)
+        {
+            mem->d_lg[ii] = -inf;
+        }
+        if (BLASFEO_DVECEL(qp_solve->d_mask, 2 * nb2 + ng2 + ii) == 0.0)
+        {
+            mem->d_ug[ii] = +inf;
         }
     }
 

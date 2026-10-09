@@ -1318,7 +1318,7 @@ classdef AcadosOcp < handle
             end
 
             % check for ACADOS_INFTY
-            if ~ismember(opts.qp_solver, {'PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_HPIPM', 'FULL_CONDENSING_DAQP', 'PARTIAL_CONDENSING_OSQP', 'FULL_CONDENSING_QPOASES'})
+            if ~ismember(opts.qp_solver, {'PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_HPIPM', 'FULL_CONDENSING_DAQP', 'PARTIAL_CONDENSING_OSQP', 'FULL_CONDENSING_QPOASES', 'PARTIAL_CONDENSING_PROXQP', 'FULL_CONDENSING_PROXQP'})
                 ACADOS_INFTY = get_acados_infty();
                 % loop over all bound vectors
                 if opts.N_horizon > 0
@@ -1358,7 +1358,9 @@ classdef AcadosOcp < handle
                 strcmp(opts.qp_solver, "PARTIAL_CONDENSING_HPIPM") || ...
                 strcmp(opts.qp_solver, "FULL_CONDENSING_DAQP") || ...
                 strcmp(opts.qp_solver, "PARTIAL_CONDENSING_OSQP") || ...
-                strcmp(opts.qp_solver, "FULL_CONDENSING_QPOASES"))
+                strcmp(opts.qp_solver, "FULL_CONDENSING_QPOASES") || ...
+                strcmp(opts.qp_solver, "PARTIAL_CONDENSING_PROXQP") || ...
+                strcmp(opts.qp_solver, "FULL_CONDENSING_PROXQP"))
                 disp(['NOTE: The selected QP solver ', opts.qp_solver, ' does not support one-sided constraints yet.']);
             end
 
