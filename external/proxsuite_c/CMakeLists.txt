@@ -95,6 +95,10 @@ endif()
 # acados top-level CMakeLists sets -std=c++0x in the global CMAKE_CXX_FLAGS
 set_target_properties(proxsuite_c PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
+# export only the C API (PROXQP_C_API): exported Eigen/proxsuite symbols can be bound to another Eigen
+# in the same process, compiled with a different alignment (e.g. without AVX), which crashes
+set_target_properties(proxsuite_c PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
 install(TARGETS proxsuite_c EXPORT proxsuite_cTargets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib)

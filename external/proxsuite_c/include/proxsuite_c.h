@@ -40,6 +40,13 @@
 #ifndef PROXSUITE_C_H_
 #define PROXSUITE_C_H_
 
+// the library is built with hidden visibility, only functions marked with PROXQP_C_API are exported
+#if defined(__GNUC__) || defined(__clang__)
+#define PROXQP_C_API __attribute__((visibility("default")))
+#else
+#define PROXQP_C_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -80,10 +87,10 @@ typedef struct
 } proxqp_c_settings;
 
 // fill with the proxsuite defaults
-void proxqp_c_default_settings(proxqp_c_settings *settings);
+PROXQP_C_API void proxqp_c_default_settings(proxqp_c_settings *settings);
 
 // value proxsuite uses for absent bounds (sqrt of double max)
-double proxqp_c_infinity(void);
+PROXQP_C_API double proxqp_c_infinity(void);
 
 /************************************************
  * dense backend
@@ -94,37 +101,37 @@ double proxqp_c_infinity(void);
 // If box_constraints is nonzero, init/update expect l_box/u_box of length n.
 // Passing NULL for a matrix/vector maps to "not present" (dimension 0).
 
-void *proxqp_c_dense_new(int n, int n_eq, int n_in, int box_constraints);
+PROXQP_C_API void *proxqp_c_dense_new(int n, int n_eq, int n_in, int box_constraints);
 
-void proxqp_c_dense_free(void *qp);
+PROXQP_C_API void proxqp_c_dense_free(void *qp);
 
-void proxqp_c_dense_apply_settings(void *qp, const proxqp_c_settings *settings);
-
-// returns 0 on success, nonzero on error
-int proxqp_c_dense_init(void *qp, const double *H, const double *g,
-                        const double *A, const double *b,
-                        const double *C, const double *l, const double *u,
-                        const double *l_box, const double *u_box);
+PROXQP_C_API void proxqp_c_dense_apply_settings(void *qp, const proxqp_c_settings *settings);
 
 // returns 0 on success, nonzero on error
-int proxqp_c_dense_update(void *qp, const double *H, const double *g,
-                          const double *A, const double *b,
-                          const double *C, const double *l, const double *u,
-                          const double *l_box, const double *u_box);
+PROXQP_C_API int proxqp_c_dense_init(void *qp, const double *H, const double *g,
+                                     const double *A, const double *b,
+                                     const double *C, const double *l, const double *u,
+                                     const double *l_box, const double *u_box);
+
+// returns 0 on success, nonzero on error
+PROXQP_C_API int proxqp_c_dense_update(void *qp, const double *H, const double *g,
+                                       const double *A, const double *b,
+                                       const double *C, const double *l, const double *u,
+                                       const double *l_box, const double *u_box);
 
 // returns a proxqp_c_status
-int proxqp_c_dense_solve(void *qp);
+PROXQP_C_API int proxqp_c_dense_solve(void *qp);
 
 // copies the solution; any output pointer may be NULL.
 // x: primal (length n), y: equality multipliers (length n_eq),
 // z: inequality multipliers (length n_in, followed by n box multipliers
 //    if the qp was created with box_constraints)
-void proxqp_c_dense_get_solution(void *qp, double *x, double *y, double *z);
+PROXQP_C_API void proxqp_c_dense_get_solution(void *qp, double *x, double *y, double *z);
 
 // overwrite the inequality multipliers of the previous result, used by PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT
-void proxqp_c_dense_set_z(void *qp, const double *z);
+PROXQP_C_API void proxqp_c_dense_set_z(void *qp, const double *z);
 
-int proxqp_c_dense_get_iter(void *qp);
+PROXQP_C_API int proxqp_c_dense_get_iter(void *qp);
 
 /************************************************
  * sparse backend
@@ -134,43 +141,43 @@ int proxqp_c_dense_get_iter(void *qp);
 // row indices i, values x; the Hessian may be given as the upper triangular
 // part only (proxsuite ignores the lower triangle).
 
-void *proxqp_c_sparse_new(int n, int n_eq, int n_in);
+PROXQP_C_API void *proxqp_c_sparse_new(int n, int n_eq, int n_in);
 
-void proxqp_c_sparse_free(void *qp);
+PROXQP_C_API void proxqp_c_sparse_free(void *qp);
 
-void proxqp_c_sparse_apply_settings(void *qp, const proxqp_c_settings *settings);
+PROXQP_C_API void proxqp_c_sparse_apply_settings(void *qp, const proxqp_c_settings *settings);
 
 // returns 0 on success, nonzero on error
-int proxqp_c_sparse_init(void *qp,
-                         const double *H_x, const int *H_i, const int *H_p,
-                         const double *g,
-                         const double *A_x, const int *A_i, const int *A_p,
-                         const double *b,
-                         const double *C_x, const int *C_i, const int *C_p,
-                         const double *l, const double *u);
+PROXQP_C_API int proxqp_c_sparse_init(void *qp,
+                                      const double *H_x, const int *H_i, const int *H_p,
+                                      const double *g,
+                                      const double *A_x, const int *A_i, const int *A_p,
+                                      const double *b,
+                                      const double *C_x, const int *C_i, const int *C_p,
+                                      const double *l, const double *u);
 
 // the sparsity structure must be unchanged wrt the preceding init;
 // returns 0 on success, nonzero on error
-int proxqp_c_sparse_update(void *qp,
-                           const double *H_x, const int *H_i, const int *H_p,
-                           const double *g,
-                           const double *A_x, const int *A_i, const int *A_p,
-                           const double *b,
-                           const double *C_x, const int *C_i, const int *C_p,
-                           const double *l, const double *u);
+PROXQP_C_API int proxqp_c_sparse_update(void *qp,
+                                        const double *H_x, const int *H_i, const int *H_p,
+                                        const double *g,
+                                        const double *A_x, const int *A_i, const int *A_p,
+                                        const double *b,
+                                        const double *C_x, const int *C_i, const int *C_p,
+                                        const double *l, const double *u);
 
 // returns a proxqp_c_status
-int proxqp_c_sparse_solve(void *qp);
+PROXQP_C_API int proxqp_c_sparse_solve(void *qp);
 
 // copies the solution; any output pointer may be NULL.
 // x: primal (length n), y: equality multipliers (length n_eq),
 // z: inequality multipliers (length n_in)
-void proxqp_c_sparse_get_solution(void *qp, double *x, double *y, double *z);
+PROXQP_C_API void proxqp_c_sparse_get_solution(void *qp, double *x, double *y, double *z);
 
 // overwrite the inequality multipliers of the previous result, used by PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT
-void proxqp_c_sparse_set_z(void *qp, const double *z);
+PROXQP_C_API void proxqp_c_sparse_set_z(void *qp, const double *z);
 
-int proxqp_c_sparse_get_iter(void *qp);
+PROXQP_C_API int proxqp_c_sparse_get_iter(void *qp);
 
 #ifdef __cplusplus
 }
