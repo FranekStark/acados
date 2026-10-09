@@ -74,6 +74,9 @@ typedef struct
     int max_iter;
     int verbose;
     int initial_guess;  // proxqp_c_initial_guess
+    int check_duality_gap;
+    double eps_duality_gap_abs;
+    double eps_duality_gap_rel;
 } proxqp_c_settings;
 
 // fill with the proxsuite defaults
@@ -118,6 +121,9 @@ int proxqp_c_dense_solve(void *qp);
 //    if the qp was created with box_constraints)
 void proxqp_c_dense_get_solution(void *qp, double *x, double *y, double *z);
 
+// overwrite the inequality multipliers of the previous result, used by PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT
+void proxqp_c_dense_set_z(void *qp, const double *z);
+
 int proxqp_c_dense_get_iter(void *qp);
 
 /************************************************
@@ -160,6 +166,9 @@ int proxqp_c_sparse_solve(void *qp);
 // x: primal (length n), y: equality multipliers (length n_eq),
 // z: inequality multipliers (length n_in)
 void proxqp_c_sparse_get_solution(void *qp, double *x, double *y, double *z);
+
+// overwrite the inequality multipliers of the previous result, used by PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT
+void proxqp_c_sparse_set_z(void *qp, const double *z);
 
 int proxqp_c_sparse_get_iter(void *qp);
 

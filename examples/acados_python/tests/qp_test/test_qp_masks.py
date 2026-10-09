@@ -119,6 +119,26 @@ def run_flip_case(qp_solver: str, warm_start: int, ref: AcadosOcpIterate):
     check_solution(solver, qp, ref, 'flip, restored')
 
 
+def run_relax_case(qp_solver: str, warm_start: int, ref: AcadosOcpIterate):
+    # relax an active upper input bound on an existing solver, such that it becomes inactive (no masks involved)
+    qp = AcadosOcpQp.from_json(QP_FILE)
+    stage = 1
+    i_ubu = qp.dims.nb[stage] + qp.dims.ng[stage]
+    assert ref.lam[stage][i_ubu] > 1e-3, "ubu has to be active in the reference solution"
+
+    qp_relaxed = AcadosOcpQp.from_json(QP_FILE)
+    qp_relaxed.set('ubu', stage, qp.ubu[stage] + 80.0)
+    ref_relaxed = solve_reference(qp_relaxed)
+
+    solver = create_solver(qp, qp_solver, warm_start)
+    solver.solve()
+    check_solution(solver, qp, ref, 'relax, original')
+
+    solver.set(stage, 'ubu', qp.ubu[stage] + 80.0)
+    solver.solve()
+    check_solution(solver, qp_relaxed, ref_relaxed, 'relax, relaxed')
+
+
 def run_soft_case(qp_solver: str, warm_start: int):
     mask_lls = qp_solver in SOLVERS_WITH_SLACK_BOUND_MASKS
     ref = solve_reference(create_soft_qp(mask_lls))
@@ -140,5 +160,6 @@ if __name__ == "__main__":
             print(f"qp_solver = {qp_solver}, warm_start = {warm_start}")
             run_poisoned_case(qp_solver, warm_start, ref)
             run_flip_case(qp_solver, warm_start, ref)
+            run_relax_case(qp_solver, warm_start, ref)
             run_soft_case(qp_solver, warm_start)
     print("test_qp_masks: all checks passed.")

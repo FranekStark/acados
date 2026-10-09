@@ -85,6 +85,7 @@ typedef struct ocp_qp_proxqp_memory_
     double *prim_sol;
     double *y_sol;
     double *z_sol;
+    double *constraint_value;  // C * prim_sol, used to prepare the warm start
 
     // the ProxQP object is opaque and cannot be placed in acados-managed memory;
     // it is created at the first call and freed in ocp_qp_proxqp_terminate

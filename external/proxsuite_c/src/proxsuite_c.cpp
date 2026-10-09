@@ -58,6 +58,9 @@ void proxqp_c_default_settings(proxqp_c_settings *settings)
     settings->max_iter = (int) s.max_iter;
     settings->verbose = s.verbose;
     settings->initial_guess = (int) s.initial_guess;
+    settings->check_duality_gap = s.check_duality_gap;
+    settings->eps_duality_gap_abs = s.eps_duality_gap_abs;
+    settings->eps_duality_gap_rel = s.eps_duality_gap_rel;
 }
 
 double proxqp_c_infinity(void)
@@ -98,6 +101,9 @@ static void apply_settings(proxsuite::proxqp::Settings<double> &s,
     s.max_iter = settings->max_iter;
     s.verbose = settings->verbose != 0;
     s.initial_guess = static_cast<InitialGuessStatus>(settings->initial_guess);
+    s.check_duality_gap = settings->check_duality_gap != 0;
+    s.eps_duality_gap_abs = settings->eps_duality_gap_abs;
+    s.eps_duality_gap_rel = settings->eps_duality_gap_rel;
 }
 
 
@@ -201,6 +207,13 @@ void proxqp_c_dense_get_solution(void *qp_, double *x, double *y, double *z)
         memcpy(y, qp->results.y.data(), qp->results.y.size() * sizeof(double));
     if (z != nullptr)
         memcpy(z, qp->results.z.data(), qp->results.z.size() * sizeof(double));
+}
+
+
+void proxqp_c_dense_set_z(void *qp_, const double *z)
+{
+    DenseQP *qp = static_cast<DenseQP *>(qp_);
+    memcpy(qp->results.z.data(), z, qp->results.z.size() * sizeof(double));
 }
 
 
@@ -338,6 +351,13 @@ void proxqp_c_sparse_get_solution(void *qp_, double *x, double *y, double *z)
         memcpy(y, qp->results.y.data(), qp->results.y.size() * sizeof(double));
     if (z != nullptr)
         memcpy(z, qp->results.z.data(), qp->results.z.size() * sizeof(double));
+}
+
+
+void proxqp_c_sparse_set_z(void *qp_, const double *z)
+{
+    SparseQP *qp = static_cast<SparseQP *>(qp_);
+    memcpy(qp->results.z.data(), z, qp->results.z.size() * sizeof(double));
 }
 
 

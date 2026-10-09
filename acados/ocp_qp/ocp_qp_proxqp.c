@@ -897,6 +897,9 @@ void ocp_qp_proxqp_opts_initialize_default(void *config_, void *dims_, void *opt
     ocp_qp_proxqp_opts *opts = opts_;
 
     proxqp_c_default_settings(&opts->settings);
+    // without the duality gap, a warm start from a solution which stays feasible and stationary after a
+    // bound change (e.g. relaxed or masked active bound) is accepted after 0 iterations
+    opts->settings.check_duality_gap = 1;
     opts->warm_start = 0;
     opts->print_level = 0;
 
@@ -933,7 +936,8 @@ void ocp_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, void 
     }
     else if (!strcmp(field, "tol_comp"))
     {
-        // covered by eps_abs
+        double *tol = value;
+        opts->settings.eps_duality_gap_abs = MAX(*tol, 1e-12);
     }
     else if (!strcmp(field, "iter_max"))
     {
@@ -1007,6 +1011,7 @@ acados_size_t ocp_qp_proxqp_memory_calculate_size(void *config_, void *dims_, vo
     size += 1 * n * sizeof(double);     // prim_sol
     size += 1 * m_eq * sizeof(double);  // y_sol
     size += 1 * m_in * sizeof(double);  // z_sol
+    size += 1 * m_in * sizeof(double);  // constraint_value
 
     size += 1 * 8;
 
@@ -1071,6 +1076,9 @@ void *ocp_qp_proxqp_memory_assign(void *config_, void *dims_, void *opts_, void 
     c_ptr += m_eq * sizeof(double);
 
     mem->z_sol = (double *) c_ptr;
+    c_ptr += m_in * sizeof(double);
+
+    mem->constraint_value = (double *) c_ptr;
     c_ptr += m_in * sizeof(double);
 
     // ints
@@ -1313,6 +1321,36 @@ int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void 
         {
             printf("\nerror: ocp_qp_proxqp: ProxQP update failed\n");
             exit(1);
+        }
+
+        // remove multipliers of constraints which are not active anymore at the previous solution, e.g.
+        // masked or relaxed bounds, from the warm start; ProxQP could accept the previous solution otherwise
+        if (opts->warm_start > 0 && m_in > 0)
+        {
+            double tol = opts->settings.eps_abs;
+            for (int ii = 0; ii < m_in; ii++)
+            {
+                mem->constraint_value[ii] = 0.0;
+            }
+            for (int jj = 0; jj < n; jj++)
+            {
+                for (int kk = mem->C_p[jj]; kk < mem->C_p[jj+1]; kk++)
+                {
+                    mem->constraint_value[mem->C_i[kk]] += mem->C_x[kk] * mem->prim_sol[jj];
+                }
+            }
+            for (int ii = 0; ii < m_in; ii++)
+            {
+                if (mem->z_sol[ii] > 0.0 && mem->constraint_value[ii] < mem->u[ii] - tol)
+                {
+                    mem->z_sol[ii] = 0.0;
+                }
+                else if (mem->z_sol[ii] < 0.0 && mem->constraint_value[ii] > mem->l[ii] + tol)
+                {
+                    mem->z_sol[ii] = 0.0;
+                }
+            }
+            proxqp_c_sparse_set_z(mem->proxqp, mem->z_sol);
         }
     }
     info->interface_time = acados_toc(&interface_timer);

@@ -82,6 +82,9 @@ void dense_qp_proxqp_opts_initialize_default(void *config_, dense_qp_dims *dims,
     dense_qp_proxqp_opts *opts = opts_;
 
     proxqp_c_default_settings(&opts->settings);
+    // without the duality gap, a warm start from a solution which stays feasible and stationary after a
+    // bound change (e.g. relaxed or masked active bound) is accepted after 0 iterations
+    opts->settings.check_duality_gap = 1;
     opts->warm_start = 0;
     opts->print_level = 0;
 
@@ -118,7 +121,8 @@ void dense_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, voi
     }
     else if (!strcmp(field, "tol_comp"))
     {
-        // covered by eps_abs
+        double *tol = value;
+        opts->settings.eps_duality_gap_abs = MAX(*tol, 1e-12);
     }
     else if (!strcmp(field, "iter_max"))
     {
@@ -489,6 +493,43 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
         {
             printf("\nerror: dense_qp_proxqp: ProxQP update failed\n");
             exit(1);
+        }
+
+        // remove multipliers of constraints which are not active anymore at the previous solution, e.g.
+        // masked or relaxed bounds, from the warm start; ProxQP could accept the previous solution otherwise
+        if (opts->warm_start > 0)
+        {
+            double tol = opts->settings.eps_abs;
+            double *z_gen = mem->z_sol;
+            double *z_box = mem->z_sol + ng2;
+            for (int ii = 0; ii < ng2; ii++)
+            {
+                double constraint_value = 0.0;
+                for (int jj = 0; jj < nv2; jj++)
+                {
+                    constraint_value += mem->C[ii + jj * ng2] * mem->prim_sol[jj];
+                }
+                if (z_gen[ii] > 0.0 && constraint_value < mem->d_ug[ii] - tol)
+                {
+                    z_gen[ii] = 0.0;
+                }
+                else if (z_gen[ii] < 0.0 && constraint_value > mem->d_lg[ii] + tol)
+                {
+                    z_gen[ii] = 0.0;
+                }
+            }
+            for (int ii = 0; ii < nv2; ii++)
+            {
+                if (z_box[ii] > 0.0 && mem->prim_sol[ii] < mem->u_box[ii] - tol)
+                {
+                    z_box[ii] = 0.0;
+                }
+                else if (z_box[ii] < 0.0 && mem->prim_sol[ii] > mem->l_box[ii] + tol)
+                {
+                    z_box[ii] = 0.0;
+                }
+            }
+            proxqp_c_dense_set_z(mem->proxqp, mem->z_sol);
         }
     }
 
