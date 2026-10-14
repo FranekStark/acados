@@ -45,4 +45,4 @@
 [submodule "external/proxsuite"]
 	path = external/proxsuite
 	url = https://github.com/FranekStark/proxsuite.git
-	branch = fix/dense-box-i-scaled-not-reset-on-keep
+	branch = fix/primal-infeasibility-lower-bound-sign
