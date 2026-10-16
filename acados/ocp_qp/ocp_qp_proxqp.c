@@ -963,6 +963,10 @@ void ocp_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, void 
         double *tol = value;
         opts->settings.eps_duality_gap_abs = MAX(*tol, 1e-12);
     }
+    else if (!strcmp(field, "tol_dual_gap"))
+    {
+        // covered by eps_duality_gap_abs, which tol_comp sets
+    }
     else if (!strcmp(field, "iter_max"))
     {
         int *iter_max = value;
