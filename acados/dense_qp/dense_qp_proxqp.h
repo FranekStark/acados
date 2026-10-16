@@ -45,6 +45,15 @@ extern "C" {
 typedef struct dense_qp_proxqp_opts_
 {
     proxqp_c_settings settings;
+    // requested tolerances, <= 0 if not set. ProxQP checks the primal and dual residuals
+    // against eps_abs and the duality gap against eps_duality_gap_abs, so eps_abs is the min
+    // of stat/eq/ineq and eps_duality_gap_abs the min of comp/dual_gap.
+    double tol_stat;
+    double tol_eq;
+    double tol_ineq;
+    double tol_comp;
+    double tol_dual_gap;
+    int dense_backend;  // proxqp_c_dense_backend, ProxQP fixes it when the solver is created
     int warm_start;  // 1: warm start with the result of the previous solve
     int print_level;
 } dense_qp_proxqp_opts;
@@ -84,10 +93,14 @@ typedef struct dense_qp_proxqp_memory_
     double *y_sol;
     double *z_sol;
 
+    // the last solve succeeded with a finite solution, so it can warm start the next one
+    int solution_is_valid;
+
     // the ProxQP object is opaque and cannot be placed in acados-managed memory;
-    // it is created at the first call and freed in dense_qp_proxqp_terminate
+    // it is created at the first call, recreated when the dense backend option changes,
+    // and freed in dense_qp_proxqp_terminate
     void *proxqp;
-    int first_run;
+    int dense_backend;  // backend the ProxQP object was created with
 
     double time_qp_solver_call;
     int iter;

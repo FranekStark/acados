@@ -39,6 +39,8 @@
 
 using proxsuite::nullopt;
 using proxsuite::optional;
+using proxsuite::proxqp::DenseBackend;
+using proxsuite::proxqp::HessianType;
 using proxsuite::proxqp::InitialGuessStatus;
 
 using DenseQP = proxsuite::proxqp::dense::QP<double>;
@@ -61,6 +63,59 @@ void proxqp_c_default_settings(proxqp_c_settings *settings)
     settings->check_duality_gap = s.check_duality_gap;
     settings->eps_duality_gap_abs = s.eps_duality_gap_abs;
     settings->eps_duality_gap_rel = s.eps_duality_gap_rel;
+    settings->default_rho = 0.0;
+    settings->default_mu_eq = s.default_mu_eq;
+    settings->default_mu_in = s.default_mu_in;
+    settings->mu_min_eq = s.mu_min_eq;
+    settings->mu_min_in = s.mu_min_in;
+    settings->cold_reset_mu_eq = s.cold_reset_mu_eq;
+    settings->cold_reset_mu_in = s.cold_reset_mu_in;
+    settings->max_iter_in = (int) s.max_iter_in;
+    settings->nb_iterative_refinement = (int) s.nb_iterative_refinement;
+    settings->eps_refact = s.eps_refact;
+    settings->eps_primal_inf = s.eps_primal_inf;
+    settings->eps_dual_inf = s.eps_dual_inf;
+}
+
+int proxqp_c_settings_set(proxqp_c_settings *settings, const char *name, const void *value)
+{
+    struct double_field { const char *name; double *ptr; };
+    struct int_field { const char *name; int *ptr; };
+
+    const double_field double_fields[] = {
+        {"default_rho", &settings->default_rho},
+        {"default_mu_eq", &settings->default_mu_eq},
+        {"default_mu_in", &settings->default_mu_in},
+        {"mu_min_eq", &settings->mu_min_eq},
+        {"mu_min_in", &settings->mu_min_in},
+        {"cold_reset_mu_eq", &settings->cold_reset_mu_eq},
+        {"cold_reset_mu_in", &settings->cold_reset_mu_in},
+        {"eps_refact", &settings->eps_refact},
+        {"eps_primal_inf", &settings->eps_primal_inf},
+        {"eps_dual_inf", &settings->eps_dual_inf},
+    };
+    const int_field int_fields[] = {
+        {"max_iter_in", &settings->max_iter_in},
+        {"nb_iterative_refinement", &settings->nb_iterative_refinement},
+    };
+
+    for (const double_field &f : double_fields)
+    {
+        if (!strcmp(name, f.name))
+        {
+            *f.ptr = *static_cast<const double *>(value);
+            return 0;
+        }
+    }
+    for (const int_field &f : int_fields)
+    {
+        if (!strcmp(name, f.name))
+        {
+            *f.ptr = *static_cast<const int *>(value);
+            return 0;
+        }
+    }
+    return 1;
 }
 
 double proxqp_c_infinity(void)
@@ -73,11 +128,12 @@ double proxqp_c_infinity(void)
  * dense backend
  ************************************************/
 
-void *proxqp_c_dense_new(int n, int n_eq, int n_in, int box_constraints)
+void *proxqp_c_dense_new(int n, int n_eq, int n_in, int box_constraints, int dense_backend)
 {
     try
     {
-        return new DenseQP(n, n_eq, n_in, box_constraints != 0);
+        return new DenseQP(n, n_eq, n_in, box_constraints != 0,
+                           static_cast<DenseBackend>(dense_backend), HessianType::Dense);
     }
     catch (const std::exception &e)
     {
@@ -104,6 +160,21 @@ static void apply_settings(proxsuite::proxqp::Settings<double> &s,
     s.check_duality_gap = settings->check_duality_gap != 0;
     s.eps_duality_gap_abs = settings->eps_duality_gap_abs;
     s.eps_duality_gap_rel = settings->eps_duality_gap_rel;
+    if (settings->default_rho > 0.0)
+        s.default_rho = settings->default_rho;
+    s.default_mu_eq = settings->default_mu_eq;
+    s.default_mu_in = settings->default_mu_in;
+    s.mu_min_eq = settings->mu_min_eq;
+    s.mu_min_in = settings->mu_min_in;
+    s.cold_reset_mu_eq = settings->cold_reset_mu_eq;
+    s.cold_reset_mu_in = settings->cold_reset_mu_in;
+    s.cold_reset_mu_eq_inv = 1.0 / settings->cold_reset_mu_eq;
+    s.cold_reset_mu_in_inv = 1.0 / settings->cold_reset_mu_in;
+    s.max_iter_in = settings->max_iter_in;
+    s.nb_iterative_refinement = settings->nb_iterative_refinement;
+    s.eps_refact = settings->eps_refact;
+    s.eps_primal_inf = settings->eps_primal_inf;
+    s.eps_dual_inf = settings->eps_dual_inf;
 }
 
 
@@ -358,6 +429,19 @@ void proxqp_c_sparse_set_z(void *qp_, const double *z)
 {
     SparseQP *qp = static_cast<SparseQP *>(qp_);
     memcpy(qp->results.z.data(), z, qp->results.z.size() * sizeof(double));
+}
+
+
+void proxqp_c_sparse_set_warm_start(void *qp_, const double *x, const double *y, const double *z)
+{
+    // same as proxsuite's sparse::warm_start, which solve(x, y, z) calls
+    SparseQP *qp = static_cast<SparseQP *>(qp_);
+    if (x != nullptr)
+        memcpy(qp->results.x.data(), x, qp->results.x.size() * sizeof(double));
+    if (y != nullptr)
+        memcpy(qp->results.y.data(), y, qp->results.y.size() * sizeof(double));
+    if (z != nullptr)
+        memcpy(qp->results.z.data(), z, qp->results.z.size() * sizeof(double));
 }
 
 

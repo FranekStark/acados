@@ -30,6 +30,7 @@
 
 // external
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,8 +86,15 @@ void dense_qp_proxqp_opts_initialize_default(void *config_, dense_qp_dims *dims,
     // without the duality gap, a warm start from a solution which stays feasible and stationary after a
     // bound change (e.g. relaxed or masked active bound) is accepted after 0 iterations
     opts->settings.check_duality_gap = 1;
+    opts->dense_backend = PROXQP_C_DENSE_BACKEND_AUTOMATIC;
     opts->warm_start = 0;
     opts->print_level = 0;
+
+    opts->tol_stat = -1.0;
+    opts->tol_eq = -1.0;
+    opts->tol_ineq = -1.0;
+    opts->tol_comp = -1.0;
+    opts->tol_dual_gap = -1.0;
 
     return;
 }
@@ -100,33 +108,80 @@ void dense_qp_proxqp_opts_update(void *config_, dense_qp_dims *dims, void *opts_
 
 
 
+static double min_requested_tol(double a, double b)
+{
+    if (a <= 0.0)
+        return b;
+    if (b <= 0.0)
+        return a;
+    return a < b ? a : b;
+}
+
+
+
+// ProxQP stops when the primal and dual residuals (infinity norm, unscaled) are below
+// eps_abs + eps_rel * (size of the corresponding terms) and, with check_duality_gap, the
+// duality gap is below eps_duality_gap_abs + eps_duality_gap_rel * (size). eps_rel and
+// eps_duality_gap_rel stay 0. Tolerances which are not requested keep the ProxQP defaults.
+static void apply_requested_tolerances(dense_qp_proxqp_opts *opts)
+{
+    proxqp_c_settings defaults;
+    proxqp_c_default_settings(&defaults);
+
+    double tol = min_requested_tol(opts->tol_stat, min_requested_tol(opts->tol_eq, opts->tol_ineq));
+    opts->settings.eps_abs = tol > 0.0 ? tol : defaults.eps_abs;
+
+    double tol_gap = min_requested_tol(opts->tol_comp, opts->tol_dual_gap);
+    opts->settings.eps_duality_gap_abs = tol_gap > 0.0 ? tol_gap : defaults.eps_duality_gap_abs;
+}
+
+
+
 void dense_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, void *value)
 {
     dense_qp_proxqp_opts *opts = opts_;
 
     if (!strcmp(field, "tol_stat"))
     {
-        // the single ProxQP tolerance eps_abs bounds primal and dual residuals;
-        // complementarity is only controlled implicitly, so add a safety factor
-        double *tol = value;
-        opts->settings.eps_abs = MAX(1e-3 * (*tol), 1e-12);
+        opts->tol_stat = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_eq"))
     {
-        // covered by eps_abs
+        opts->tol_eq = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_ineq"))
     {
-        // covered by eps_abs
+        opts->tol_ineq = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_comp"))
     {
-        double *tol = value;
-        opts->settings.eps_duality_gap_abs = MAX(*tol, 1e-12);
+        opts->tol_comp = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_dual_gap"))
     {
-        // covered by eps_duality_gap_abs, which tol_comp sets
+        opts->tol_dual_gap = *(double *) value;
+        apply_requested_tolerances(opts);
+    }
+    else if (!strcmp(field, "proxqp_dense_backend"))
+    {
+        // factorization of the dense backend; ProxQP fixes it when the solver is created,
+        // so a change recreates the solver at the next call
+        const char *backend = value;
+        if (!strcmp(backend, "AUTOMATIC"))
+            opts->dense_backend = PROXQP_C_DENSE_BACKEND_AUTOMATIC;
+        else if (!strcmp(backend, "PRIMAL_DUAL_LDLT"))
+            opts->dense_backend = PROXQP_C_DENSE_BACKEND_PRIMAL_DUAL_LDLT;
+        else if (!strcmp(backend, "PRIMAL_LDLT"))
+            opts->dense_backend = PROXQP_C_DENSE_BACKEND_PRIMAL_LDLT;
+        else
+        {
+            printf("\nerror: dense_qp_proxqp_opts_set: wrong value for proxqp_dense_backend: %s\n", backend);
+            exit(1);
+        }
     }
     else if (!strcmp(field, "iter_max"))
     {
@@ -143,6 +198,15 @@ void dense_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, voi
         int *print_level = value;
         opts->print_level = *print_level;
         opts->settings.verbose = *print_level > 0;
+    }
+    else if (!strncmp(field, "proxqp_", 7))
+    {
+        // further ProxSuite settings by their ProxSuite name, see proxqp_c_settings_set
+        if (proxqp_c_settings_set(&opts->settings, field + 7, value) != 0)
+        {
+            printf("\nerror: dense_qp_proxqp_opts_set: wrong field: %s\n", field);
+            exit(1);
+        }
     }
     else
     {
@@ -289,7 +353,8 @@ void *dense_qp_proxqp_memory_assign(void *config_, dense_qp_dims *dims, void *op
     // the ProxQP object is created at the first call, once the actual
     // dimensions of the (stacked) qp are known
     mem->proxqp = NULL;
-    mem->first_run = 1;
+    mem->dense_backend = PROXQP_C_DENSE_BACKEND_AUTOMATIC;
+    mem->solution_is_valid = 0;
 
     assert((char *) raw_memory + dense_qp_proxqp_memory_calculate_size(config_, dims, opts_) >=
            c_ptr);
@@ -334,13 +399,13 @@ void dense_qp_proxqp_memory_reset(void *config_, void *qp_in_, void *qp_out_, vo
 {
     dense_qp_proxqp_memory *mem = mem_;
 
-    // drop the ProxQP object, it is recreated at the next call
+    // drop the ProxQP object and the warm start, the solver is recreated at the next call
     if (mem->proxqp != NULL)
     {
         proxqp_c_dense_free(mem->proxqp);
         mem->proxqp = NULL;
     }
-    mem->first_run = 1;
+    mem->solution_is_valid = 0;
 
     return;
 }
@@ -373,193 +438,26 @@ acados_size_t dense_qp_proxqp_workspace_calculate_size(void *config_, dense_qp_d
  * functions
  ************************************************/
 
-int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *mem_,
-                    void *work_)
+static int all_finite(int n, const double *v)
 {
-    dense_qp_in *qp_in = qp_in_;
-    dense_qp_out *qp_out = qp_out_;
+    for (int ii = 0; ii < n; ii++)
+    {
+        if (!isfinite(v[ii]))
+            return 0;
+    }
+    return 1;
+}
 
-    qp_info *info = (qp_info *) qp_out->misc;
-    acados_timer tot_timer, qp_timer, interface_timer;
-    acados_tic(&tot_timer);
-    acados_tic(&interface_timer);
 
-    // cast structures
-    dense_qp_proxqp_opts *opts = (dense_qp_proxqp_opts *) opts_;
-    dense_qp_proxqp_memory *mem = (dense_qp_proxqp_memory *) mem_;
-    dense_qp_in *qp_stacked = mem->qp_stacked;
 
-    // extract dense qp size
+static void fill_in_qp_out(dense_qp_in *qp_in, dense_qp_out *qp_out, dense_qp_proxqp_memory *mem,
+                           int nv2, int ng2, int nb2, const int *idxb2)
+{
     int nv = qp_in->dim->nv;
     int ne = qp_in->dim->ne;
     int ng = qp_in->dim->ng;
     int nb = qp_in->dim->nb;
     int ns = qp_in->dim->ns;
-
-    int ng2, nv2, nb2;
-    int *idxb2;
-    dense_qp_in *qp_solve;  // qp whose bounds are passed to ProxQP
-
-    double inf = proxqp_c_infinity();
-
-    // fill in the upper triangular of H in dense_qp
-    blasfeo_dtrtr_l(nv, qp_in->Hv, 0, 0, qp_in->Hv, 0, 0);
-
-    if (ns > 0)
-    {
-        // extract idxs_rev to compute the stacked dims
-        d_dense_qp_get_all(qp_in, mem->H, mem->g, mem->A, mem->b, mem->idxb, mem->d_lb0,
-                           mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, mem->Zl, mem->Zu, mem->zl,
-                           mem->zu, mem->idxs, mem->idxs_rev, mem->d_ls, mem->d_us);
-
-        dense_qp_stack_slacks_dims_from_idxs_rev(qp_in->dim, mem->idxs_rev, qp_stacked->dim);
-        ng2 = qp_stacked->dim->ng;
-        nv2 = qp_stacked->dim->nv;
-        nb2 = qp_stacked->dim->nb;
-        idxb2 = mem->idxb_stacked;
-        qp_solve = qp_stacked;
-
-        dense_qp_stack_slacks(qp_in, qp_stacked);
-        d_dense_qp_get_all(qp_stacked, mem->H, mem->g, mem->A, mem->b, idxb2, mem->d_lb0,
-                           mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, NULL, NULL, NULL, NULL,
-                           NULL, NULL, NULL, NULL);
-    }
-    else
-    {
-        ng2 = ng;
-        nv2 = nv;
-        nb2 = nb;
-        idxb2 = mem->idxb;
-        qp_solve = qp_in;
-
-        d_dense_qp_get_all(qp_in, mem->H, mem->g, mem->A, mem->b, mem->idxb, mem->d_lb0,
-                           mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, mem->Zl, mem->Zu, mem->zl,
-                           mem->zu, mem->idxs, mem->idxs_rev, mem->d_ls, mem->d_us);
-    }
-
-    // ignore bounds and constraints that are masked out via d_mask
-    for (int ii = 0; ii < nb2; ii++)
-    {
-        if (BLASFEO_DVECEL(qp_solve->d_mask, ii) == 0.0)
-        {
-            mem->d_lb0[ii] = -inf;
-        }
-        if (BLASFEO_DVECEL(qp_solve->d_mask, nb2 + ng2 + ii) == 0.0)
-        {
-            mem->d_ub0[ii] = +inf;
-        }
-    }
-    for (int ii = 0; ii < ng2; ii++)
-    {
-        if (BLASFEO_DVECEL(qp_solve->d_mask, nb2 + ii) == 0.0)
-        {
-            mem->d_lg[ii] = -inf;
-        }
-        if (BLASFEO_DVECEL(qp_solve->d_mask, 2 * nb2 + ng2 + ii) == 0.0)
-        {
-            mem->d_ug[ii] = +inf;
-        }
-    }
-
-    // expand the bounds on the subset idxb2 into full-length box constraints
-    for (int ii = 0; ii < nv2; ii++)
-    {
-        mem->l_box[ii] = -inf;
-        mem->u_box[ii] = +inf;
-    }
-    for (int ii = 0; ii < nb2; ii++)
-    {
-        mem->l_box[idxb2[ii]] = mem->d_lb0[ii];
-        mem->u_box[idxb2[ii]] = mem->d_ub0[ii];
-    }
-
-    // per-call settings, warm starting reuses the previous solution
-    proxqp_c_settings settings = opts->settings;
-    if (!mem->first_run && opts->warm_start > 0)
-        settings.initial_guess = PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT;
-
-    if (mem->first_run)
-    {
-        mem->proxqp = proxqp_c_dense_new(nv2, ne, ng2, 1);
-        if (mem->proxqp == NULL)
-        {
-            printf("\nerror: dense_qp_proxqp: failed to create ProxQP solver\n");
-            exit(1);
-        }
-        proxqp_c_dense_apply_settings(mem->proxqp, &settings);
-        if (proxqp_c_dense_init(mem->proxqp, mem->H, mem->g, ne > 0 ? mem->A : NULL,
-                                ne > 0 ? mem->b : NULL, ng2 > 0 ? mem->C : NULL,
-                                ng2 > 0 ? mem->d_lg : NULL, ng2 > 0 ? mem->d_ug : NULL,
-                                mem->l_box, mem->u_box) != 0)
-        {
-            printf("\nerror: dense_qp_proxqp: ProxQP init failed\n");
-            exit(1);
-        }
-        mem->first_run = 0;
-    }
-    else
-    {
-        proxqp_c_dense_apply_settings(mem->proxqp, &settings);
-        if (proxqp_c_dense_update(mem->proxqp, mem->H, mem->g, ne > 0 ? mem->A : NULL,
-                                  ne > 0 ? mem->b : NULL, ng2 > 0 ? mem->C : NULL,
-                                  ng2 > 0 ? mem->d_lg : NULL, ng2 > 0 ? mem->d_ug : NULL,
-                                  mem->l_box, mem->u_box) != 0)
-        {
-            printf("\nerror: dense_qp_proxqp: ProxQP update failed\n");
-            exit(1);
-        }
-
-        // remove multipliers of constraints which are not active anymore at the previous solution, e.g.
-        // masked or relaxed bounds, from the warm start; ProxQP could accept the previous solution otherwise
-        if (opts->warm_start > 0)
-        {
-            double tol = opts->settings.eps_abs;
-            double *z_gen = mem->z_sol;
-            double *z_box = mem->z_sol + ng2;
-            for (int ii = 0; ii < ng2; ii++)
-            {
-                double constraint_value = 0.0;
-                for (int jj = 0; jj < nv2; jj++)
-                {
-                    constraint_value += mem->C[ii + jj * ng2] * mem->prim_sol[jj];
-                }
-                if (z_gen[ii] > 0.0 && constraint_value < mem->d_ug[ii] - tol)
-                {
-                    z_gen[ii] = 0.0;
-                }
-                else if (z_gen[ii] < 0.0 && constraint_value > mem->d_lg[ii] + tol)
-                {
-                    z_gen[ii] = 0.0;
-                }
-            }
-            for (int ii = 0; ii < nv2; ii++)
-            {
-                if (z_box[ii] > 0.0 && mem->prim_sol[ii] < mem->u_box[ii] - tol)
-                {
-                    z_box[ii] = 0.0;
-                }
-                else if (z_box[ii] < 0.0 && mem->prim_sol[ii] > mem->l_box[ii] + tol)
-                {
-                    z_box[ii] = 0.0;
-                }
-            }
-            proxqp_c_dense_set_z(mem->proxqp, mem->z_sol);
-        }
-    }
-
-    info->interface_time = acados_toc(&interface_timer);
-    acados_tic(&qp_timer);
-
-    // solve
-    int proxqp_status = proxqp_c_dense_solve(mem->proxqp);
-
-    info->solve_QP_time = acados_toc(&qp_timer);
-    mem->time_qp_solver_call = info->solve_QP_time;
-    mem->iter = proxqp_c_dense_get_iter(mem->proxqp);
-
-    acados_tic(&interface_timer);
-
-    proxqp_c_dense_get_solution(mem->proxqp, mem->prim_sol, mem->y_sol, mem->z_sol);
 
     // primal variables (with ns > 0 the stacked qp primal solution [v; sl; su]
     // matches the layout of qp_out->v)
@@ -661,10 +559,220 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
 
     // compute slacks
     dense_qp_compute_t(qp_in, qp_out);
-    info->t_computed = 1;
 
     // multiply with mask to ensure that multipliers associated with masked constraints are zero
     blasfeo_dvecmul(2 * (nb + ng + ns), qp_in->d_mask, 0, qp_out->lam, 0, qp_out->lam, 0);
+}
+
+
+
+int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *mem_,
+                    void *work_)
+{
+    dense_qp_in *qp_in = qp_in_;
+    dense_qp_out *qp_out = qp_out_;
+
+    qp_info *info = (qp_info *) qp_out->misc;
+    acados_timer tot_timer, qp_timer, interface_timer;
+    acados_tic(&tot_timer);
+    acados_tic(&interface_timer);
+
+    // cast structures
+    dense_qp_proxqp_opts *opts = (dense_qp_proxqp_opts *) opts_;
+    dense_qp_proxqp_memory *mem = (dense_qp_proxqp_memory *) mem_;
+    dense_qp_in *qp_stacked = mem->qp_stacked;
+
+    // extract dense qp size
+    int nv = qp_in->dim->nv;
+    int ne = qp_in->dim->ne;
+    int ng = qp_in->dim->ng;
+    int nb = qp_in->dim->nb;
+    int ns = qp_in->dim->ns;
+
+    int ng2, nv2, nb2;
+    int *idxb2;
+    dense_qp_in *qp_solve;  // qp whose bounds are passed to ProxQP
+
+    double inf = proxqp_c_infinity();
+
+    // fill in the upper triangular of H in dense_qp
+    blasfeo_dtrtr_l(nv, qp_in->Hv, 0, 0, qp_in->Hv, 0, 0);
+
+    if (ns > 0)
+    {
+        // extract idxs_rev to compute the stacked dims
+        d_dense_qp_get_all(qp_in, mem->H, mem->g, mem->A, mem->b, mem->idxb, mem->d_lb0,
+                           mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, mem->Zl, mem->Zu, mem->zl,
+                           mem->zu, mem->idxs, mem->idxs_rev, mem->d_ls, mem->d_us);
+
+        dense_qp_stack_slacks_dims_from_idxs_rev(qp_in->dim, mem->idxs_rev, qp_stacked->dim);
+        ng2 = qp_stacked->dim->ng;
+        nv2 = qp_stacked->dim->nv;
+        nb2 = qp_stacked->dim->nb;
+        idxb2 = mem->idxb_stacked;
+        qp_solve = qp_stacked;
+
+        dense_qp_stack_slacks(qp_in, qp_stacked);
+        d_dense_qp_get_all(qp_stacked, mem->H, mem->g, mem->A, mem->b, idxb2, mem->d_lb0,
+                           mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, NULL, NULL, NULL, NULL,
+                           NULL, NULL, NULL, NULL);
+    }
+    else
+    {
+        ng2 = ng;
+        nv2 = nv;
+        nb2 = nb;
+        idxb2 = mem->idxb;
+        qp_solve = qp_in;
+
+        d_dense_qp_get_all(qp_in, mem->H, mem->g, mem->A, mem->b, mem->idxb, mem->d_lb0,
+                           mem->d_ub0, mem->C, mem->d_lg, mem->d_ug, mem->Zl, mem->Zu, mem->zl,
+                           mem->zu, mem->idxs, mem->idxs_rev, mem->d_ls, mem->d_us);
+    }
+
+    // ignore bounds and constraints that are masked out via d_mask
+    for (int ii = 0; ii < nb2; ii++)
+    {
+        if (BLASFEO_DVECEL(qp_solve->d_mask, ii) == 0.0)
+        {
+            mem->d_lb0[ii] = -inf;
+        }
+        if (BLASFEO_DVECEL(qp_solve->d_mask, nb2 + ng2 + ii) == 0.0)
+        {
+            mem->d_ub0[ii] = +inf;
+        }
+    }
+    for (int ii = 0; ii < ng2; ii++)
+    {
+        if (BLASFEO_DVECEL(qp_solve->d_mask, nb2 + ii) == 0.0)
+        {
+            mem->d_lg[ii] = -inf;
+        }
+        if (BLASFEO_DVECEL(qp_solve->d_mask, 2 * nb2 + ng2 + ii) == 0.0)
+        {
+            mem->d_ug[ii] = +inf;
+        }
+    }
+
+    // expand the bounds on the subset idxb2 into full-length box constraints
+    for (int ii = 0; ii < nv2; ii++)
+    {
+        mem->l_box[ii] = -inf;
+        mem->u_box[ii] = +inf;
+    }
+    for (int ii = 0; ii < nb2; ii++)
+    {
+        mem->l_box[idxb2[ii]] = mem->d_lb0[ii];
+        mem->u_box[idxb2[ii]] = mem->d_ub0[ii];
+    }
+
+    // the dense backend is fixed when the ProxQP object is created
+    if (mem->proxqp != NULL && mem->dense_backend != opts->dense_backend)
+    {
+        proxqp_c_dense_free(mem->proxqp);
+        mem->proxqp = NULL;
+        mem->solution_is_valid = 0;
+    }
+
+    // per-call settings; warm starting reuses the previous solution and proximal parameters,
+    // but never after a failed or non-finite solve: the cold initial guess also resets the
+    // proximal parameters
+    proxqp_c_settings settings = opts->settings;
+    int warm_start = mem->proxqp != NULL && opts->warm_start > 0 && mem->solution_is_valid;
+    if (warm_start)
+        settings.initial_guess = PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT;
+
+    if (mem->proxqp == NULL)
+    {
+        mem->proxqp = proxqp_c_dense_new(nv2, ne, ng2, 1, opts->dense_backend);
+        if (mem->proxqp == NULL)
+        {
+            printf("\nerror: dense_qp_proxqp: failed to create ProxQP solver\n");
+            exit(1);
+        }
+        mem->dense_backend = opts->dense_backend;
+        proxqp_c_dense_apply_settings(mem->proxqp, &settings);
+        if (proxqp_c_dense_init(mem->proxqp, mem->H, mem->g, ne > 0 ? mem->A : NULL,
+                                ne > 0 ? mem->b : NULL, ng2 > 0 ? mem->C : NULL,
+                                ng2 > 0 ? mem->d_lg : NULL, ng2 > 0 ? mem->d_ug : NULL,
+                                mem->l_box, mem->u_box) != 0)
+        {
+            printf("\nerror: dense_qp_proxqp: ProxQP init failed\n");
+            exit(1);
+        }
+    }
+    else
+    {
+        proxqp_c_dense_apply_settings(mem->proxqp, &settings);
+        if (proxqp_c_dense_update(mem->proxqp, mem->H, mem->g, ne > 0 ? mem->A : NULL,
+                                  ne > 0 ? mem->b : NULL, ng2 > 0 ? mem->C : NULL,
+                                  ng2 > 0 ? mem->d_lg : NULL, ng2 > 0 ? mem->d_ug : NULL,
+                                  mem->l_box, mem->u_box) != 0)
+        {
+            printf("\nerror: dense_qp_proxqp: ProxQP update failed\n");
+            exit(1);
+        }
+
+        // remove multipliers of constraints which are not active anymore at the previous solution, e.g.
+        // masked or relaxed bounds, from the warm start; ProxQP could accept the previous solution otherwise
+        if (warm_start)
+        {
+            double tol = opts->settings.eps_abs;
+            double *z_gen = mem->z_sol;
+            double *z_box = mem->z_sol + ng2;
+            for (int ii = 0; ii < ng2; ii++)
+            {
+                double constraint_value = 0.0;
+                for (int jj = 0; jj < nv2; jj++)
+                {
+                    constraint_value += mem->C[ii + jj * ng2] * mem->prim_sol[jj];
+                }
+                if (z_gen[ii] > 0.0 && constraint_value < mem->d_ug[ii] - tol)
+                {
+                    z_gen[ii] = 0.0;
+                }
+                else if (z_gen[ii] < 0.0 && constraint_value > mem->d_lg[ii] + tol)
+                {
+                    z_gen[ii] = 0.0;
+                }
+            }
+            for (int ii = 0; ii < nv2; ii++)
+            {
+                if (z_box[ii] > 0.0 && mem->prim_sol[ii] < mem->u_box[ii] - tol)
+                {
+                    z_box[ii] = 0.0;
+                }
+                else if (z_box[ii] < 0.0 && mem->prim_sol[ii] > mem->l_box[ii] + tol)
+                {
+                    z_box[ii] = 0.0;
+                }
+            }
+            proxqp_c_dense_set_z(mem->proxqp, mem->z_sol);
+        }
+    }
+
+    info->interface_time = acados_toc(&interface_timer);
+    acados_tic(&qp_timer);
+
+    // solve
+    int proxqp_status = proxqp_c_dense_solve(mem->proxqp);
+
+    info->solve_QP_time = acados_toc(&qp_timer);
+    mem->time_qp_solver_call = info->solve_QP_time;
+    mem->iter = proxqp_c_dense_get_iter(mem->proxqp);
+
+    acados_tic(&interface_timer);
+
+    proxqp_c_dense_get_solution(mem->proxqp, mem->prim_sol, mem->y_sol, mem->z_sol);
+
+    int finite = all_finite(nv2, mem->prim_sol) && all_finite(ne, mem->y_sol) &&
+                 all_finite(ng2 + nv2, mem->z_sol);
+    mem->solution_is_valid = finite && proxqp_status == PROXQP_C_SOLVED;
+
+    // fill qp_out; a non-finite solution is not copied
+    if (finite)
+        fill_in_qp_out(qp_in, qp_out, mem, nv2, ng2, nb2, idxb2);
+    info->t_computed = finite;
 
     info->interface_time += acados_toc(&interface_timer);
     info->total_time = acados_toc(&tot_timer);
@@ -691,6 +799,8 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
             acados_status = ACADOS_QP_FAILURE;
             break;
     }
+    if (!finite)
+        acados_status = ACADOS_NAN_DETECTED;
     mem->status = acados_status;
 
     return acados_status;

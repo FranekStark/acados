@@ -74,6 +74,14 @@ typedef enum
     PROXQP_C_COLD_START_WITH_PREVIOUS_RESULT
 } proxqp_c_initial_guess;
 
+// values match proxsuite::proxqp::DenseBackend
+typedef enum
+{
+    PROXQP_C_DENSE_BACKEND_AUTOMATIC = 0,
+    PROXQP_C_DENSE_BACKEND_PRIMAL_DUAL_LDLT,
+    PROXQP_C_DENSE_BACKEND_PRIMAL_LDLT
+} proxqp_c_dense_backend;
+
 typedef struct
 {
     double eps_abs;
@@ -84,10 +92,29 @@ typedef struct
     int check_duality_gap;
     double eps_duality_gap_abs;
     double eps_duality_gap_rel;
+    // proximal parameters of a cold start and their lower bounds
+    double default_rho;  // <= 0: keep the proxsuite default, which depends on the dense backend
+    double default_mu_eq;
+    double default_mu_in;
+    double mu_min_eq;
+    double mu_min_in;
+    // values mu is reset to when the solver stalls
+    double cold_reset_mu_eq;
+    double cold_reset_mu_in;
+    int max_iter_in;
+    int nb_iterative_refinement;
+    double eps_refact;
+    double eps_primal_inf;
+    double eps_dual_inf;
 } proxqp_c_settings;
 
 // fill with the proxsuite defaults
 PROXQP_C_API void proxqp_c_default_settings(proxqp_c_settings *settings);
+
+// set one of the settings from default_rho on by its proxsuite name, e.g. "max_iter_in";
+// value points to an int for the integer settings and to a double otherwise.
+// Returns 0 on success, nonzero if the name is unknown.
+PROXQP_C_API int proxqp_c_settings_set(proxqp_c_settings *settings, const char *name, const void *value);
 
 // value proxsuite uses for absent bounds (sqrt of double max)
 PROXQP_C_API double proxqp_c_infinity(void);
@@ -101,7 +128,8 @@ PROXQP_C_API double proxqp_c_infinity(void);
 // If box_constraints is nonzero, init/update expect l_box/u_box of length n.
 // Passing NULL for a matrix/vector maps to "not present" (dimension 0).
 
-PROXQP_C_API void *proxqp_c_dense_new(int n, int n_eq, int n_in, int box_constraints);
+// dense_backend: proxqp_c_dense_backend, fixed for the lifetime of the object
+PROXQP_C_API void *proxqp_c_dense_new(int n, int n_eq, int n_in, int box_constraints, int dense_backend);
 
 PROXQP_C_API void proxqp_c_dense_free(void *qp);
 
@@ -156,7 +184,8 @@ PROXQP_C_API int proxqp_c_sparse_init(void *qp,
                                       const double *C_x, const int *C_i, const int *C_p,
                                       const double *l, const double *u);
 
-// the sparsity structure must be unchanged wrt the preceding init;
+// the sparsity structure must be unchanged wrt the preceding init: proxsuite silently keeps
+// the old matrices otherwise. NULL for a matrix or vector keeps its previous values.
 // returns 0 on success, nonzero on error
 PROXQP_C_API int proxqp_c_sparse_update(void *qp,
                                         const double *H_x, const int *H_i, const int *H_p,
@@ -176,6 +205,10 @@ PROXQP_C_API void proxqp_c_sparse_get_solution(void *qp, double *x, double *y, d
 
 // overwrite the inequality multipliers of the previous result, used by PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT
 PROXQP_C_API void proxqp_c_sparse_set_z(void *qp, const double *z);
+
+// set the initial guess used by PROXQP_C_WARM_START; any pointer may be NULL.
+// Call it after init/update, which clear the previous result for PROXQP_C_WARM_START.
+PROXQP_C_API void proxqp_c_sparse_set_warm_start(void *qp, const double *x, const double *y, const double *z);
 
 PROXQP_C_API int proxqp_c_sparse_get_iter(void *qp);
 

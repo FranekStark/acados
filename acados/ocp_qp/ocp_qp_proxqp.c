@@ -30,6 +30,7 @@
 
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,28 @@
 #include "acados/utils/timing.h"
 #include "acados/utils/types.h"
 
+
+
+/************************************************
+ * QP layout
+ *
+ * Variables, per stage: [u; x; s_lower; s_upper], as in ocp_qp_in.
+ *
+ * Equality constraints A v = b: the dynamics of all stages.
+ *
+ * Rows of C (l <= C v <= u), in this order:
+ *   per stage the [box; general] constraints, then the replicated upper sides of the
+ *   softened ones (the original row then only keeps the lower side);
+ *   the slack bounds of all stages.
+ *
+ * ocp_qp_in only holds dense blocks, so the sparsity pattern of P, A and C is detected from
+ * the data: the pattern is the union of all nonzeros seen so far. A nonzero outside the pattern
+ * grows it and rebuilds the ProxQP solver; otherwise the solver data is updated in place.
+ * The rows do not depend on the pattern.
+ *
+ * A rebuild has to create a new ProxQP object: ProxQP's sparse update compares the new
+ * structure with the stored one and silently keeps the old matrices if they differ.
+ ************************************************/
 
 
 
@@ -183,6 +206,331 @@ static int acados_proxqp_nnzmax_C(const ocp_qp_dims *dims)
 
 
 
+// number of flags in the sparsity masks of triu(RSQ), [B A]^T and [D C]^T
+static int acados_proxqp_mask_size_P(const ocp_qp_dims *dims)
+{
+    int size = 0;
+    for (int ii = 0; ii <= dims->N; ii++)
+    {
+        int nv = dims->nu[ii] + dims->nx[ii];
+        size += nv*(nv+1)/2;
+    }
+    return size;
+}
+
+
+
+static int acados_proxqp_mask_size_BA(const ocp_qp_dims *dims)
+{
+    int size = 0;
+    for (int ii = 0; ii < dims->N; ii++)
+    {
+        size += (dims->nu[ii] + dims->nx[ii]) * dims->nx[ii+1];
+    }
+    return size;
+}
+
+
+
+static int acados_proxqp_mask_size_DC(const ocp_qp_dims *dims)
+{
+    int size = 0;
+    for (int ii = 0; ii <= dims->N; ii++)
+    {
+        size += (dims->nu[ii] + dims->nx[ii]) * dims->ng[ii];
+    }
+    return size;
+}
+
+
+
+// length of the unpack buffer: one row of RSQ, BAbt or DCt
+static int acados_proxqp_work_size(const ocp_qp_dims *dims)
+{
+    int size = 1;
+    for (int ii = 0; ii <= dims->N; ii++)
+    {
+        int nv = dims->nu[ii] + dims->nx[ii];
+        size = nv > size ? nv : size;
+        size = dims->ng[ii] > size ? dims->ng[ii] : size;
+        if (ii < dims->N)
+            size = dims->nx[ii+1] > size ? dims->nx[ii+1] : size;
+    }
+    return size;
+}
+
+
+
+// index of the box constraint on variable jj of stage kk, -1 if there is none
+static int box_of_var(const ocp_qp_in *in, int kk, int jj)
+{
+    for (int ii = 0; ii < in->dim->nb[kk]; ii++)
+    {
+        if (in->idxb[kk][ii] == jj)
+            return ii;
+    }
+    return -1;
+}
+
+
+
+static int is_soft(const ocp_qp_in *in, int kk, int cc)
+{
+    return in->dim->ns[kk] > 0 && in->idxs_rev[kk][cc] >= 0;
+}
+
+
+
+// number of softened constraints of stage kk with index below cc, i.e. the position of
+// the replicated row of constraint cc among the replicated rows of the stage
+static int num_soft_before(const ocp_qp_in *in, int kk, int cc)
+{
+    int num = 0;
+    for (int ii = 0; ii < cc; ii++)
+    {
+        if (is_soft(in, kk, ii))
+            num++;
+    }
+    return num;
+}
+
+
+
+static inline void emit(int *idx, double *val, int *nn, int write_structure, int *changed,
+                        int row, double value)
+{
+    if (write_structure)
+        idx[*nn] = row;
+    if (val[*nn] != value)
+    {
+        val[*nn] = value;
+        *changed = 1;
+    }
+    (*nn)++;
+}
+
+
+
+// Writes the nonzeros of P, A and C in CSC order for the current sparsity masks, and with
+// write_structure also their row indices and column pointers. Entries outside the masks are
+// not written: if one of them is nonzero, its flag is set and 1 is returned, and the caller
+// has to call this again with write_structure to rebuild the pattern.
+// Within each column the rows are emitted in increasing order.
+// mem->{P,A,C}_changed tell whether a value differs from the one written by the previous call.
+static int pack_matrices(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem, int write_structure)
+{
+    ocp_qp_dims *dims = in->dim;
+
+    int N = dims->N;
+    int *nx = dims->nx;
+    int *nu = dims->nu;
+    int *nb = dims->nb;
+    int *ng = dims->ng;
+    int *ns = dims->ns;
+
+    int ii, jj, kk, cc;
+    int grew = 0;
+    double *w = mem->work_row;
+
+    mem->P_changed = 0;
+    mem->A_changed = 0;
+    mem->C_changed = 0;
+
+    // P: triu(RSQ) restricted to the pattern, and the diagonal Z
+    int nn = 0, col = 0, offset = 0;
+    char *mask = mem->P_mask;
+    for (kk = 0; kk <= N; kk++)
+    {
+        int nv = nu[kk] + nx[kk];
+        // row jj of the lower triangle of RSQ is column jj of the upper triangle
+        for (jj = 0; jj < nv; jj++)
+        {
+            if (write_structure)
+                mem->P_p[col] = nn;
+            col++;
+
+            blasfeo_unpack_dmat(1, jj+1, in->RSQrq+kk, jj, 0, w, 1);
+            for (ii = 0; ii <= jj; ii++)
+            {
+                if (mask[ii])
+                    emit(mem->P_i, mem->P_x, &nn, write_structure, &mem->P_changed, offset + ii, w[ii]);
+                else if (w[ii] != 0.0)
+                {
+                    mask[ii] = 1;
+                    grew = 1;
+                }
+            }
+            mask += jj + 1;
+        }
+        offset += nv;
+
+        for (jj = 0; jj < 2*ns[kk]; jj++)
+        {
+            if (write_structure)
+                mem->P_p[col] = nn;
+            col++;
+
+            emit(mem->P_i, mem->P_x, &nn, write_structure, &mem->P_changed, offset + jj,
+                 BLASFEO_DVECEL(in->Z+kk, jj));
+        }
+        offset += 2*ns[kk];
+    }
+    if (write_structure)
+        mem->P_p[col] = nn;
+
+    // A: dynamics; C: per stage [box; general] constraints followed by the replicated upper
+    // sides of the softened ones, then the slack bounds of all stages.
+    int slk_start = 0;
+    for (kk = 0; kk <= N; kk++)
+    {
+        slk_start += nb[kk] + ng[kk] + ns[kk];
+    }
+
+    int na = 0, nc = 0;
+    col = 0;
+    int row_dyn = 0;
+    int row_con = 0;
+    int row_slk = slk_start;
+    char *ba_mask = mem->BA_mask;
+    char *dc_mask = mem->DC_mask;
+    for (kk = 0; kk <= N; kk++)
+    {
+        int nv = nu[kk] + nx[kk];
+        int ncon = nb[kk] + ng[kk];
+        int nx1 = kk < N ? nx[kk+1] : 0;
+        int row_rep = row_con + ncon;
+        int nsb = num_soft_before(in, kk, nb[kk]);
+
+        for (jj = 0; jj < nv; jj++)
+        {
+            if (write_structure)
+            {
+                mem->A_p[col] = na;
+                mem->C_p[col] = nc;
+            }
+            col++;
+
+            // -I of the previous stage's dynamics
+            if (kk > 0 && jj >= nu[kk])
+                emit(mem->A_i, mem->A_x, &na, write_structure, &mem->A_changed,
+                     row_dyn - nx[kk] + jj - nu[kk], -1.0);
+
+            // column of [B A]
+            if (kk < N)
+            {
+                blasfeo_unpack_dmat(1, nx1, in->BAbt+kk, jj, 0, w, 1);
+                for (ii = 0; ii < nx1; ii++)
+                {
+                    if (ba_mask[ii])
+                        emit(mem->A_i, mem->A_x, &na, write_structure, &mem->A_changed, row_dyn + ii, w[ii]);
+                    else if (w[ii] != 0.0)
+                    {
+                        ba_mask[ii] = 1;
+                        grew = 1;
+                    }
+                }
+            }
+            ba_mask += nx1;
+
+            // box constraint
+            int cb = box_of_var(in, kk, jj);
+            if (cb >= 0)
+                emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_con + cb, 1.0);
+
+            // column of [D C]
+            blasfeo_unpack_dmat(1, ng[kk], in->DCt+kk, jj, 0, w, 1);
+            for (ii = 0; ii < ng[kk]; ii++)
+            {
+                if (dc_mask[ii])
+                    emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_con + nb[kk] + ii, w[ii]);
+            }
+
+            // replicated softened box constraint
+            if (cb >= 0 && is_soft(in, kk, cb))
+                emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed,
+                     row_rep + num_soft_before(in, kk, cb), 1.0);
+
+            // replicated softened general constraints, same pattern as the originals
+            int is = nsb;
+            for (ii = 0; ii < ng[kk]; ii++)
+            {
+                if (is_soft(in, kk, nb[kk]+ii))
+                {
+                    if (dc_mask[ii])
+                        emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_rep + is, w[ii]);
+                    is++;
+                }
+            }
+
+            // grow the pattern only after both uses of dc_mask in this column
+            for (ii = 0; ii < ng[kk]; ii++)
+            {
+                if (!dc_mask[ii] && w[ii] != 0.0)
+                {
+                    dc_mask[ii] = 1;
+                    grew = 1;
+                }
+            }
+            dc_mask += ng[kk];
+        }
+
+        // slack variables on lower inequalities (original rows)
+        for (jj = 0; jj < ns[kk]; jj++)
+        {
+            if (write_structure)
+            {
+                mem->A_p[col] = na;
+                mem->C_p[col] = nc;
+            }
+            col++;
+
+            for (cc = 0; cc < ncon; cc++)
+            {
+                // no break, there could possibly be multiple
+                if (in->idxs_rev[kk][cc] == jj)
+                    emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_con + cc, 1.0);
+            }
+            // nonnegativity constraint
+            emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_slk + jj, 1.0);
+        }
+
+        // slack variables on upper inequalities (replicated rows)
+        for (jj = 0; jj < ns[kk]; jj++)
+        {
+            if (write_structure)
+            {
+                mem->A_p[col] = na;
+                mem->C_p[col] = nc;
+            }
+            col++;
+
+            int is = 0;
+            for (cc = 0; cc < ncon; cc++)
+            {
+                if (in->idxs_rev[kk][cc] == jj)
+                    emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_rep + is, -1.0);
+                if (in->idxs_rev[kk][cc] >= 0)
+                    is++;
+            }
+            // nonnegativity constraint
+            emit(mem->C_i, mem->C_x, &nc, write_structure, &mem->C_changed, row_slk + ns[kk] + jj, 1.0);
+        }
+
+        row_dyn += nx1;
+        row_con += ncon + ns[kk];
+        row_slk += 2*ns[kk];
+    }
+    if (write_structure)
+    {
+        mem->A_p[col] = na;
+        mem->C_p[col] = nc;
+    }
+
+    return grew;
+}
+
+
+
 static void update_gradient(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
 {
     ocp_qp_dims *dims = in->dim;
@@ -198,570 +546,6 @@ static void update_gradient(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
         blasfeo_unpack_dvec(nu[kk]+nx[kk]+2*ns[kk], in->rqz + kk, 0, &mem->g[nn], 1);
         nn += nu[kk]+nx[kk]+2*ns[kk];
     }
-}
-
-
-
-static void update_hessian_structure(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
-{
-    ocp_qp_dims *dims = in->dim;
-
-    int N = dims->N;
-    int *nx = dims->nx;
-    int *nu = dims->nu;
-    int *ns = dims->ns;
-
-    int ii, jj, kk;
-
-    // CSC format: P_i are row indices and P_p are column pointers
-    int nn = 0, offset = 0, col = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        // write RSQ[kk]
-        for (jj = 0; jj < nx[kk] + nu[kk]; jj++)
-        {
-            mem->P_p[col] = nn;
-            col++;
-
-            for (ii = 0; ii <= jj; ii++)
-            {
-                // we write only the upper triangular part
-                mem->P_i[nn] = offset + ii;
-                nn++;
-            }
-        }
-        offset += nx[kk] + nu[kk];
-
-        // write Z[kk]
-        for (jj = 0; jj < 2*ns[kk]; jj++)
-        {
-            mem->P_p[col] = nn;
-            col++;
-
-            // diagonal
-            mem->P_i[nn] = offset + jj;
-            nn++;
-        }
-
-        offset += 2*ns[kk];
-    }
-
-    mem->P_p[col] = nn;
-}
-
-
-
-static void update_hessian_data(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
-{
-    ocp_qp_dims *dims = in->dim;
-
-    int N = dims->N;
-    int *nx = dims->nx;
-    int *nu = dims->nu;
-    int *ns = dims->ns;
-
-    int ii, kk;
-
-    // Traversing the matrix in column-major order
-    int nn = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        // writing RSQ[kk]
-        // we write the lower triangular part in row-major order
-        // that's the same as writing the upper triangular part in
-        // column-major order
-        for (ii = 0; ii < nx[kk] + nu[kk]; ii++)
-        {
-            blasfeo_unpack_dmat(1, ii+1, in->RSQrq+kk, ii, 0, mem->P_x+nn, 1);
-            nn += ii+1;
-        }
-
-        // write Z[kk]
-        blasfeo_unpack_dvec(2*ns[kk], in->Z+kk, 0, mem->P_x+nn, 1);
-        nn += 2*ns[kk];
-    }
-}
-
-
-
-static void update_eq_matrix_structure(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
-{
-    ocp_qp_dims *dims = in->dim;
-
-    int N = dims->N;
-    int *nx = dims->nx;
-    int *nu = dims->nu;
-    int *ns = dims->ns;
-
-    int ii, jj, kk;
-
-    int row_offset_dyn = 0;
-
-    // CSC format: A_i are row indices and A_p are column pointers
-    int nn = 0, col = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        // control variables
-        for (jj = 0; jj < nu[kk]; jj++)
-        {
-            mem->A_p[col] = nn;
-            col++;
-
-            if (kk < N)
-            {
-                // write column from B
-                for (ii = 0; ii < nx[kk + 1]; ii++)
-                {
-                    mem->A_i[nn] = row_offset_dyn + ii;
-                    nn++;
-                }
-            }
-        }
-
-        // state variables
-        for (jj = 0; jj < nx[kk]; jj++)
-        {
-            mem->A_p[col] = nn;
-            col++;
-
-            if (kk > 0)
-            {
-                // write column from -I
-                mem->A_i[nn] = row_offset_dyn - nx[kk] + jj;
-                nn++;
-            }
-
-            if (kk < N)
-            {
-                // write column from A
-                for (ii = 0; ii < nx[kk + 1]; ii++)
-                {
-                    mem->A_i[nn] = row_offset_dyn + ii;
-                    nn++;
-                }
-            }
-        }
-
-        // slack variables, no dynamics entries
-        for (jj = 0; jj < 2*ns[kk]; jj++)
-        {
-            mem->A_p[col] = nn;
-            col++;
-        }
-
-        row_offset_dyn += kk < N ? nx[kk + 1] : 0;
-    }
-
-    // end of matrix
-    mem->A_p[col] = nn;
-}
-
-
-
-static void update_eq_matrix_data(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
-{
-    ocp_qp_dims *dims = in->dim;
-
-    int N = dims->N;
-    int *nx = dims->nx;
-    int *nu = dims->nu;
-    int *ns = dims->ns;
-
-    int jj, kk;
-
-    // Traverse matrix in column-major order
-    int nn = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        // control variables
-        for (jj = 0; jj < nu[kk]; jj++)
-        {
-            if (kk < N)
-            {
-                // write column from B
-                blasfeo_unpack_dmat(1, nx[kk+1], in->BAbt+kk, jj, 0, mem->A_x+nn, 1);
-                nn += nx[kk+1];
-            }
-        }
-
-        // state variables
-        for (jj = 0; jj < nx[kk]; jj++)
-        {
-            if (kk > 0)
-            {
-                // write column from -I
-                mem->A_x[nn] = -1.0;
-                nn++;
-            }
-
-            if (kk < N)
-            {
-                // write column from A
-                blasfeo_unpack_dmat(1, nx[kk+1], in->BAbt+kk, nu[kk]+jj, 0, mem->A_x+nn, 1);
-                nn += nx[kk+1];
-            }
-        }
-
-        UNUSED(ns);
-    }
-}
-
-
-
-static void update_ineq_matrix_structure(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
-{
-    ocp_qp_dims *dims = in->dim;
-
-    int N = dims->N;
-    int *nx = dims->nx;
-    int *nu = dims->nu;
-    int *nb = dims->nb;
-    int *ng = dims->ng;
-    int *ns = dims->ns;
-
-    int ii, jj, kk;
-
-    int row_offset_con = 0;
-    int row_offset_slk = 0;
-
-    int slk_start = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        slk_start += nb[kk]+ng[kk]+ns[kk];
-    }
-
-    // CSC format: C_i are row indices and C_p are column pointers
-    int nn = 0, col = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        // compute number of softed box constraints
-        int nsb = 0;
-        for (ii=0; ii<nb[kk]; ii++)
-        {
-            if (in->idxs_rev[kk][ii]>=0)
-            {
-                nsb++;
-            }
-        }
-
-        // control variables
-        for (jj = 0; jj < nu[kk]; jj++)
-        {
-            mem->C_p[col] = nn;
-            col++;
-
-            // write bound on u
-            for (ii = 0; ii < nb[kk]; ii++)
-            {
-                if (in->idxb[kk][ii] == jj)
-                {
-                    mem->C_i[nn] = row_offset_con + ii;
-                    nn++;
-                    break;
-                }
-            }
-            int idxbu = ii;
-
-            // write column from D
-            for (ii = 0; ii < ng[kk]; ii++)
-            {
-                mem->C_i[nn] = row_offset_con + nb[kk] + ii;
-                nn++;
-            }
-
-            // replicated softed bound on u
-            if (idxbu<nb[kk]) // bounded input
-            {
-                if (in->idxs_rev[kk][idxbu]>=0) // softed bounded input
-                {
-                    // compute position in "packed" soft constraints, i.e. it is the itmp-th one
-                    int itmp = 0;
-                    for (ii=0; ii<idxbu; ii++)
-                    {
-                        if (in->idxs_rev[kk][ii]>=0)
-                        {
-                            itmp++;
-                        }
-                    }
-                    mem->C_i[nn] = row_offset_con + nb[kk] + ng[kk] + itmp;
-                    nn++;
-                }
-            }
-
-            // replicated softed D
-            {
-                int itmp = 0;
-                for (ii = 0; ii < ng[kk]; ii++)
-                {
-                    if (in->idxs_rev[kk][nb[kk]+ii]>=0) // softed
-                    {
-                        mem->C_i[nn] = row_offset_con + nb[kk] + ng[kk] + nsb + itmp;
-                        nn++;
-                        itmp++;
-                    }
-                }
-            }
-
-        }
-
-        // state variables
-        for (jj = 0; jj < nx[kk]; jj++)
-        {
-            mem->C_p[col] = nn;
-            col++;
-
-            // write bound on x
-            for (ii = 0; ii < nb[kk]; ii++)
-            {
-                if (in->idxb[kk][ii] == nu[kk] + jj)
-                {
-                    mem->C_i[nn] = row_offset_con + ii;
-                    nn++;
-                    break;
-                }
-            }
-            int idxbx = ii;
-
-            // write column from C
-            for (ii = 0; ii < ng[kk]; ii++)
-            {
-                mem->C_i[nn] = row_offset_con + nb[kk] + ii;
-                nn++;
-            }
-
-            // replicated softed bound on x
-            if (idxbx<nb[kk]) // bounded input
-            {
-                if (in->idxs_rev[kk][idxbx]>=0) // softed bounded input
-                {
-                    // compute position in "packed" soft constraints, i.e. it is the itmp-th one
-                    int itmp = 0;
-                    for (ii=0; ii<idxbx; ii++)
-                    {
-                        if (in->idxs_rev[kk][ii]>=0)
-                        {
-                            itmp++;
-                        }
-                    }
-                    mem->C_i[nn] = row_offset_con + nb[kk] + ng[kk] + itmp;
-                    nn++;
-                }
-            }
-
-            // replicated softed C
-            {
-                int itmp = 0;
-                for (ii = 0; ii < ng[kk]; ii++)
-                {
-                    if (in->idxs_rev[kk][nb[kk]+ii]>=0) // softed
-                    {
-                        mem->C_i[nn] = row_offset_con + nb[kk] + ng[kk] + nsb + itmp;
-                        nn++;
-                        itmp++;
-                    }
-                }
-            }
-
-        }
-
-        // slack variables on lower inequalities (original)
-        for (jj = 0; jj < ns[kk]; jj++)
-        {
-            mem->C_p[col] = nn;
-            col++;
-
-            // soft constraint
-            for (ii=0; ii<nb[kk]+ng[kk]; ii++)
-            {
-                if (in->idxs_rev[kk][ii]==jj)
-                {
-                    mem->C_i[nn] = row_offset_con + ii;
-                    nn++;
-                    // no break, there could possibly be multiple
-                }
-            }
-
-            // nonnegativity constraint
-            mem->C_i[nn] = slk_start + row_offset_slk + jj;
-            nn++;
-        }
-
-        // slack variables on upper inequalities (replicated)
-        for (jj = 0; jj < ns[kk]; jj++)
-        {
-            mem->C_p[col] = nn;
-            col++;
-
-            // soft constraint
-            int itmp = 0;
-            for (ii=0; ii<nb[kk]+ng[kk]; ii++)
-            {
-                if (in->idxs_rev[kk][ii]==jj)
-                {
-                    mem->C_i[nn] = row_offset_con + nb[kk] + ng[kk] + itmp;
-                    nn++;
-                    // no break, there could possibly be multiple
-                }
-                if (in->idxs_rev[kk][ii]>=0)
-                {
-                    itmp++;
-                }
-            }
-
-            // nonnegativity constraint
-            mem->C_i[nn] = slk_start + row_offset_slk + ns[kk] + jj;
-            nn++;
-        }
-
-        row_offset_con += nb[kk]+ng[kk]+ns[kk];
-        row_offset_slk += 2*ns[kk];
-    }
-
-    // end of matrix
-    mem->C_p[col] = nn;
-}
-
-
-
-static void update_ineq_matrix_data(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
-{
-    ocp_qp_dims *dims = in->dim;
-
-    int N = dims->N;
-    int *nx = dims->nx;
-    int *nu = dims->nu;
-    int *nb = dims->nb;
-    int *ng = dims->ng;
-    int *ns = dims->ns;
-
-    int ii, jj, kk;
-
-    // Traverse matrix in column-major order
-    int nn = 0;
-    for (kk = 0; kk <= N; kk++)
-    {
-        // control variables
-        for (jj = 0; jj < nu[kk]; jj++)
-        {
-            // write bound on u
-            for (ii = 0; ii < nb[kk]; ii++)
-            {
-                if (in->idxb[kk][ii] == jj)
-                {
-                    mem->C_x[nn] = 1.0;
-                    nn++;
-                    break;
-                }
-            }
-            int idxbu = ii;
-
-            // write column from D
-            blasfeo_unpack_dmat(1, ng[kk], in->DCt+kk, jj, 0, mem->C_x+nn, 1);
-            nn += ng[kk];
-
-            // replicated softed bound on u
-            if (idxbu<nb[kk]) // bounded input
-            {
-                if (in->idxs_rev[kk][idxbu]>=0) // softed bounded input
-                {
-                    mem->C_x[nn] = 1.0;
-                    nn++;
-                }
-            }
-
-            // replicated softed D
-            for (ii = 0; ii < ng[kk]; ii++)
-            {
-                if (in->idxs_rev[kk][nb[kk]+ii]>=0) // softed
-                {
-                    mem->C_x[nn] = BLASFEO_DMATEL(in->DCt+kk, jj, ii);
-                    nn++;
-                }
-            }
-
-        }
-
-        // state variables
-        for (jj = 0; jj < nx[kk]; jj++)
-        {
-            // write bound on x
-            for (ii = 0; ii < nb[kk]; ii++)
-            {
-                if (in->idxb[kk][ii] == nu[kk] + jj)
-                {
-                    mem->C_x[nn] = 1.0;
-                    nn++;
-                    break;
-                }
-            }
-            int idxbx = ii;
-
-            // write column from C
-            blasfeo_unpack_dmat(1, ng[kk], in->DCt+kk, nu[kk]+jj, 0, mem->C_x+nn, 1);
-            nn += ng[kk];
-
-            // replicated softed bound on x
-            if (idxbx<nb[kk]) // bounded input
-            {
-                if (in->idxs_rev[kk][idxbx]>=0) // softed bounded input
-                {
-                    mem->C_x[nn] = 1.0;
-                    nn++;
-                }
-            }
-
-            // replicated softed C
-            for (ii = 0; ii < ng[kk]; ii++)
-            {
-                if (in->idxs_rev[kk][nb[kk]+ii]>=0) // softed
-                {
-                    mem->C_x[nn] = BLASFEO_DMATEL(in->DCt+kk, nu[kk]+jj, ii);
-                    nn++;
-                }
-            }
-
-        }
-
-        // slack variables on lower inequalities (original)
-        for (jj = 0; jj < ns[kk]; jj++)
-        {
-            // soft constraint
-            for (ii=0; ii<nb[kk]+ng[kk]; ii++)
-            {
-                if (in->idxs_rev[kk][ii]==jj)
-                {
-                    mem->C_x[nn] = 1.0;
-                    nn++;
-                    // no break, there could possibly be multiple
-                }
-            }
-
-            // nonnegativity constraint
-            mem->C_x[nn] = 1.0;
-            nn++;
-        }
-
-        // slack variables on upper inequalities (replicated)
-        for (jj = 0; jj < ns[kk]; jj++)
-        {
-            // soft constraint
-            for (ii=0; ii<nb[kk]+ng[kk]; ii++)
-            {
-                if (in->idxs_rev[kk][ii]==jj)
-                {
-                    mem->C_x[nn] = -1.0;
-                    nn++;
-                    // no break, there could possibly be multiple
-                }
-            }
-
-            // nonnegativity constraint
-            mem->C_x[nn] = 1.0;
-            nn++;
-        }
-
-    }
-
 }
 
 
@@ -868,22 +652,16 @@ static void update_bounds(const ocp_qp_in *in, ocp_qp_proxqp_memory *mem)
 
 
 
-static void ocp_qp_proxqp_update_memory(const ocp_qp_in *in, const ocp_qp_proxqp_opts *opts,
-                                        ocp_qp_proxqp_memory *mem)
+static int all_finite(int n, const double *v)
 {
-    if (mem->first_run)
+    for (int ii = 0; ii < n; ii++)
     {
-        update_hessian_structure(in, mem);
-        update_eq_matrix_structure(in, mem);
-        update_ineq_matrix_structure(in, mem);
+        if (!isfinite(v[ii]))
+            return 0;
     }
-
-    update_bounds(in, mem);
-    update_gradient(in, mem);
-    update_hessian_data(in, mem);
-    update_eq_matrix_data(in, mem);
-    update_ineq_matrix_data(in, mem);
+    return 1;
 }
+
 
 
 /************************************************
@@ -927,6 +705,12 @@ void ocp_qp_proxqp_opts_initialize_default(void *config_, void *dims_, void *opt
     opts->warm_start = 0;
     opts->print_level = 0;
 
+    opts->tol_stat = -1.0;
+    opts->tol_eq = -1.0;
+    opts->tol_ineq = -1.0;
+    opts->tol_comp = -1.0;
+    opts->tol_dual_gap = -1.0;
+
     return;
 }
 
@@ -939,33 +723,63 @@ void ocp_qp_proxqp_opts_update(void *config_, void *dims_, void *opts_)
 
 
 
+static double min_requested_tol(double a, double b)
+{
+    if (a <= 0.0)
+        return b;
+    if (b <= 0.0)
+        return a;
+    return a < b ? a : b;
+}
+
+
+
+// ProxQP stops when the primal and dual residuals (infinity norm, unscaled) are below
+// eps_abs + eps_rel * (size of the corresponding terms) and, with check_duality_gap, the
+// duality gap is below eps_duality_gap_abs + eps_duality_gap_rel * (size). eps_rel and
+// eps_duality_gap_rel stay 0. Tolerances which are not requested keep the ProxQP defaults.
+static void apply_requested_tolerances(ocp_qp_proxqp_opts *opts)
+{
+    proxqp_c_settings defaults;
+    proxqp_c_default_settings(&defaults);
+
+    double tol = min_requested_tol(opts->tol_stat, min_requested_tol(opts->tol_eq, opts->tol_ineq));
+    opts->settings.eps_abs = tol > 0.0 ? tol : defaults.eps_abs;
+
+    double tol_gap = min_requested_tol(opts->tol_comp, opts->tol_dual_gap);
+    opts->settings.eps_duality_gap_abs = tol_gap > 0.0 ? tol_gap : defaults.eps_duality_gap_abs;
+}
+
+
+
 void ocp_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, void *value)
 {
     ocp_qp_proxqp_opts *opts = opts_;
 
     if (!strcmp(field, "tol_stat"))
     {
-        // the single ProxQP tolerance eps_abs bounds primal and dual residuals;
-        // complementarity is only controlled implicitly, so add a safety factor
-        double *tol = value;
-        opts->settings.eps_abs = MAX(1e-3 * (*tol), 1e-12);
+        opts->tol_stat = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_eq"))
     {
-        // covered by eps_abs
+        opts->tol_eq = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_ineq"))
     {
-        // covered by eps_abs
+        opts->tol_ineq = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_comp"))
     {
-        double *tol = value;
-        opts->settings.eps_duality_gap_abs = MAX(*tol, 1e-12);
+        opts->tol_comp = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "tol_dual_gap"))
     {
-        // covered by eps_duality_gap_abs, which tol_comp sets
+        opts->tol_dual_gap = *(double *) value;
+        apply_requested_tolerances(opts);
     }
     else if (!strcmp(field, "iter_max"))
     {
@@ -982,6 +796,20 @@ void ocp_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, void 
         int *print_level = value;
         opts->print_level = *print_level;
         opts->settings.verbose = *print_level > 0;
+    }
+    else if (!strcmp(field, "proxqp_dense_backend"))
+    {
+        // only used by the dense interface (full condensing), accepted here so that
+        // the ProxQP options can be set the same way for both interfaces
+    }
+    else if (!strncmp(field, "proxqp_", 7))
+    {
+        // further ProxSuite settings by their ProxSuite name, see proxqp_c_settings_set
+        if (proxqp_c_settings_set(&opts->settings, field + 7, value) != 0)
+        {
+            printf("\nerror: ocp_qp_proxqp_opts_set: wrong field: %s\n", field);
+            exit(1);
+        }
     }
     else
     {
@@ -1017,8 +845,12 @@ acados_size_t ocp_qp_proxqp_memory_calculate_size(void *config_, void *dims_, vo
     size_t A_nnzmax = acados_proxqp_nnzmax_A(dims);
     size_t C_nnzmax = acados_proxqp_nnzmax_C(dims);
 
+    size_t nw = acados_proxqp_work_size(dims);
+
     acados_size_t size = 0;
     size += sizeof(ocp_qp_proxqp_memory);
+
+    size += nw * sizeof(double);        // work_row
 
     size += 1 * n * sizeof(double);     // g
     size += 1 * m_eq * sizeof(double);  // b
@@ -1041,6 +873,10 @@ acados_size_t ocp_qp_proxqp_memory_calculate_size(void *config_, void *dims_, vo
     size += 1 * m_in * sizeof(double);  // z_sol
     size += 1 * m_in * sizeof(double);  // constraint_value
 
+    size += acados_proxqp_mask_size_P(dims);   // P_mask
+    size += acados_proxqp_mask_size_BA(dims);  // BA_mask
+    size += acados_proxqp_mask_size_DC(dims);  // DC_mask
+
     size += 1 * 8;
 
     return size;
@@ -1061,6 +897,7 @@ void *ocp_qp_proxqp_memory_assign(void *config_, void *dims_, void *opts_, void 
     int P_nnzmax = acados_proxqp_nnzmax_P(dims);
     int A_nnzmax = acados_proxqp_nnzmax_A(dims);
     int C_nnzmax = acados_proxqp_nnzmax_C(dims);
+    int nw = acados_proxqp_work_size(dims);
 
     // char pointer
     char *c_ptr = (char *) raw_memory;
@@ -1071,11 +908,14 @@ void *ocp_qp_proxqp_memory_assign(void *config_, void *dims_, void *opts_, void 
     mem->P_nnzmax = P_nnzmax;
     mem->A_nnzmax = A_nnzmax;
     mem->C_nnzmax = C_nnzmax;
-    mem->first_run = 1;
+    mem->num_rebuilds = 0;
+    mem->solution_is_valid = 0;
 
     align_char_to(8, &c_ptr);
 
     // doubles
+    assign_and_advance_double(nw, &mem->work_row, &c_ptr);
+
     mem->g = (double *) c_ptr;
     c_ptr += n * sizeof(double);
 
@@ -1128,6 +968,14 @@ void *ocp_qp_proxqp_memory_assign(void *config_, void *dims_, void *opts_, void 
     mem->C_p = (int *) c_ptr;
     c_ptr += (n + 1) * sizeof(int);
 
+    // chars: the pattern starts empty and grows with the data
+    assign_and_advance_char(acados_proxqp_mask_size_P(dims), &mem->P_mask, &c_ptr);
+    assign_and_advance_char(acados_proxqp_mask_size_BA(dims), &mem->BA_mask, &c_ptr);
+    assign_and_advance_char(acados_proxqp_mask_size_DC(dims), &mem->DC_mask, &c_ptr);
+    memset(mem->P_mask, 0, acados_proxqp_mask_size_P(dims));
+    memset(mem->BA_mask, 0, acados_proxqp_mask_size_BA(dims));
+    memset(mem->DC_mask, 0, acados_proxqp_mask_size_DC(dims));
+
     // the ProxQP object is opaque and cannot be placed in acados-managed memory;
     // it is allocated by proxqp_c_sparse_new at the first call and freed in
     // ocp_qp_proxqp_terminate
@@ -1159,6 +1007,11 @@ void ocp_qp_proxqp_memory_get(void *config_, void *mem_, const char *field, void
         int *tmp_ptr = value;
         *tmp_ptr = mem->status;
     }
+    else if (!strcmp(field, "num_rebuilds"))
+    {
+        int *tmp_ptr = value;
+        *tmp_ptr = mem->num_rebuilds;
+    }
     else
     {
         printf("\nerror: ocp_qp_proxqp_memory_get: field %s not available\n", field);
@@ -1173,13 +1026,14 @@ void ocp_qp_proxqp_memory_reset(void *config_, void *qp_in_, void *qp_out_, void
 {
     ocp_qp_proxqp_memory *mem = mem_;
 
-    // drop the ProxQP object, it is recreated at the next call
+    // drop the ProxQP object and the warm start, the solver is recreated at the next call;
+    // the sparsity pattern is kept
     if (mem->proxqp != NULL)
     {
         proxqp_c_sparse_free(mem->proxqp);
         mem->proxqp = NULL;
     }
-    mem->first_run = 1;
+    mem->solution_is_valid = 0;
 
     return;
 }
@@ -1294,6 +1148,74 @@ void ocp_qp_proxqp_terminate(void *config_, void *mem_, void *work_)
 
 
 
+// Removes the multipliers of inequalities which are not active anymore at the previous
+// solution, e.g. masked or relaxed bounds, from the warm start; ProxQP could accept the
+// previous solution otherwise. Uses C, l and u of the current QP.
+static void prune_warm_start_multipliers(int n, int m_in, double tol, ocp_qp_proxqp_memory *mem)
+{
+    for (int ii = 0; ii < m_in; ii++)
+    {
+        mem->constraint_value[ii] = 0.0;
+    }
+    for (int jj = 0; jj < n; jj++)
+    {
+        for (int kk = mem->C_p[jj]; kk < mem->C_p[jj+1]; kk++)
+        {
+            mem->constraint_value[mem->C_i[kk]] += mem->C_x[kk] * mem->prim_sol[jj];
+        }
+    }
+    for (int ii = 0; ii < m_in; ii++)
+    {
+        if (mem->z_sol[ii] > 0.0 && mem->constraint_value[ii] < mem->u[ii] - tol)
+        {
+            mem->z_sol[ii] = 0.0;
+        }
+        else if (mem->z_sol[ii] < 0.0 && mem->constraint_value[ii] > mem->l[ii] + tol)
+        {
+            mem->z_sol[ii] = 0.0;
+        }
+    }
+}
+
+
+
+// Creates a ProxQP solver for the structure of the last pack_matrices, replacing a previous one.
+static void setup_solver(int n, int m_eq, int m_in, const proxqp_c_settings *settings,
+                         const ocp_qp_proxqp_opts *opts, ocp_qp_proxqp_memory *mem)
+{
+    if (mem->proxqp != NULL)
+    {
+        proxqp_c_sparse_free(mem->proxqp);
+        mem->proxqp = NULL;
+    }
+
+    mem->proxqp = proxqp_c_sparse_new(n, m_eq, m_in);
+    if (mem->proxqp == NULL)
+    {
+        printf("\nerror: ocp_qp_proxqp: failed to create ProxQP solver\n");
+        exit(1);
+    }
+    proxqp_c_sparse_apply_settings(mem->proxqp, settings);
+    if (proxqp_c_sparse_init(mem->proxqp,
+                             mem->P_x, mem->P_i, mem->P_p, mem->g,
+                             m_eq > 0 ? mem->A_x : NULL, mem->A_i, mem->A_p,
+                             m_eq > 0 ? mem->b : NULL,
+                             m_in > 0 ? mem->C_x : NULL, mem->C_i, mem->C_p,
+                             m_in > 0 ? mem->l : NULL, m_in > 0 ? mem->u : NULL) != 0)
+    {
+        printf("\nerror: ocp_qp_proxqp: ProxQP init failed\n");
+        exit(1);
+    }
+
+    mem->num_rebuilds++;
+    if (opts->print_level > 0)
+    {
+        printf("ocp_qp_proxqp: built solver (#%d), n %d, n_eq %d, n_in %d, nnz(H) %d, nnz(A) %d, nnz(C) %d\n",
+               mem->num_rebuilds, n, m_eq, m_in, mem->P_p[n], mem->A_p[n], mem->C_p[n]);
+    }
+}
+
+
 
 int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void *mem_, void *work_)
 {
@@ -1308,84 +1230,56 @@ int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void 
     ocp_qp_proxqp_opts *opts = (ocp_qp_proxqp_opts *) opts_;
     ocp_qp_proxqp_memory *mem = (ocp_qp_proxqp_memory *) mem_;
 
-    acados_tic(&interface_timer);
-    int first_run = mem->first_run;
-    ocp_qp_proxqp_update_memory(qp_in, opts, mem);
-    mem->first_run = 0;
-
     int n = acados_proxqp_num_vars(qp_in->dim);
     int m_eq = acados_proxqp_num_eq(qp_in->dim);
     int m_in = acados_proxqp_num_ineq(qp_in->dim);
 
-    // per-call settings, warm starting reuses the previous solution
-    proxqp_c_settings settings = opts->settings;
-    if (!first_run && opts->warm_start > 0)
-        settings.initial_guess = PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT;
-
-    // update proxqp solver with new data
-    if (first_run)
+    acados_tic(&interface_timer);
+    int rebuild = mem->proxqp == NULL;
+    if (pack_matrices(qp_in, mem, 0) || rebuild)
     {
-        mem->proxqp = proxqp_c_sparse_new(n, m_eq, m_in);
-        if (mem->proxqp == NULL)
-        {
-            printf("\nerror: ocp_qp_proxqp: failed to create ProxQP solver\n");
-            exit(1);
-        }
-        proxqp_c_sparse_apply_settings(mem->proxqp, &settings);
-        if (proxqp_c_sparse_init(mem->proxqp,
-                                 mem->P_x, mem->P_i, mem->P_p, mem->g,
-                                 m_eq > 0 ? mem->A_x : NULL, mem->A_i, mem->A_p,
-                                 m_eq > 0 ? mem->b : NULL,
-                                 m_in > 0 ? mem->C_x : NULL, mem->C_i, mem->C_p,
-                                 m_in > 0 ? mem->l : NULL, m_in > 0 ? mem->u : NULL) != 0)
-        {
-            printf("\nerror: ocp_qp_proxqp: ProxQP init failed\n");
-            exit(1);
-        }
+        // the sparsity pattern grew (or this is the first call)
+        pack_matrices(qp_in, mem, 1);
+        rebuild = 1;
+    }
+    update_bounds(qp_in, mem);
+    update_gradient(qp_in, mem);
+
+    // never warm start from a failed or non-finite solve: the cold initial guess also resets
+    // the proximal parameters, which the warm start would carry over
+    int warm_start = opts->warm_start > 0 && mem->solution_is_valid;
+    if (warm_start && m_in > 0)
+        prune_warm_start_multipliers(n, m_in, opts->settings.eps_abs, mem);
+
+    proxqp_c_settings settings = opts->settings;
+    if (rebuild)
+    {
+        // the rows do not depend on the pattern, so the last solution fits the new solver
+        if (warm_start)
+            settings.initial_guess = PROXQP_C_WARM_START;
+        setup_solver(n, m_eq, m_in, &settings, opts, mem);
+        if (warm_start)
+            proxqp_c_sparse_set_warm_start(mem->proxqp, mem->prim_sol, mem->y_sol, mem->z_sol);
     }
     else
     {
+        // warm starting reuses the previous solution and proximal parameters
+        if (warm_start)
+            settings.initial_guess = PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT;
         proxqp_c_sparse_apply_settings(mem->proxqp, &settings);
+        // matrices whose values did not change are not passed, ProxQP keeps them
         if (proxqp_c_sparse_update(mem->proxqp,
-                                   mem->P_x, mem->P_i, mem->P_p, mem->g,
-                                   m_eq > 0 ? mem->A_x : NULL, mem->A_i, mem->A_p,
+                                   mem->P_changed ? mem->P_x : NULL, mem->P_i, mem->P_p, mem->g,
+                                   m_eq > 0 && mem->A_changed ? mem->A_x : NULL, mem->A_i, mem->A_p,
                                    m_eq > 0 ? mem->b : NULL,
-                                   m_in > 0 ? mem->C_x : NULL, mem->C_i, mem->C_p,
+                                   m_in > 0 && mem->C_changed ? mem->C_x : NULL, mem->C_i, mem->C_p,
                                    m_in > 0 ? mem->l : NULL, m_in > 0 ? mem->u : NULL) != 0)
         {
             printf("\nerror: ocp_qp_proxqp: ProxQP update failed\n");
             exit(1);
         }
-
-        // remove multipliers of constraints which are not active anymore at the previous solution, e.g.
-        // masked or relaxed bounds, from the warm start; ProxQP could accept the previous solution otherwise
-        if (opts->warm_start > 0 && m_in > 0)
-        {
-            double tol = opts->settings.eps_abs;
-            for (int ii = 0; ii < m_in; ii++)
-            {
-                mem->constraint_value[ii] = 0.0;
-            }
-            for (int jj = 0; jj < n; jj++)
-            {
-                for (int kk = mem->C_p[jj]; kk < mem->C_p[jj+1]; kk++)
-                {
-                    mem->constraint_value[mem->C_i[kk]] += mem->C_x[kk] * mem->prim_sol[jj];
-                }
-            }
-            for (int ii = 0; ii < m_in; ii++)
-            {
-                if (mem->z_sol[ii] > 0.0 && mem->constraint_value[ii] < mem->u[ii] - tol)
-                {
-                    mem->z_sol[ii] = 0.0;
-                }
-                else if (mem->z_sol[ii] < 0.0 && mem->constraint_value[ii] > mem->l[ii] + tol)
-                {
-                    mem->z_sol[ii] = 0.0;
-                }
-            }
+        if (warm_start && m_in > 0)
             proxqp_c_sparse_set_z(mem->proxqp, mem->z_sol);
-        }
     }
     info->interface_time = acados_toc(&interface_timer);
 
@@ -1398,16 +1292,22 @@ int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void 
     mem->iter = proxqp_c_sparse_get_iter(mem->proxqp);
 
     proxqp_c_sparse_get_solution(mem->proxqp, mem->prim_sol, mem->y_sol, mem->z_sol);
+    int finite = all_finite(n, mem->prim_sol) && all_finite(m_eq, mem->y_sol) &&
+                 all_finite(m_in, mem->z_sol);
+    mem->solution_is_valid = finite && proxqp_status == PROXQP_C_SOLVED;
 
-    // fill qp_out
-    fill_in_qp_out(qp_in, qp_out, mem);
-    ocp_qp_compute_t(qp_in, qp_out);
+    // fill qp_out; a non-finite solution is not copied
+    if (finite)
+    {
+        fill_in_qp_out(qp_in, qp_out, mem);
+        ocp_qp_compute_t(qp_in, qp_out);
+    }
 
     // info
     info->solve_QP_time = acados_toc(&qp_timer);
     info->total_time = acados_toc(&tot_timer);
     info->num_iter = mem->iter;
-    info->t_computed = 1;
+    info->t_computed = finite;
 
     // check exit conditions
     int acados_status;
@@ -1430,6 +1330,8 @@ int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void 
             acados_status = ACADOS_QP_FAILURE;
             break;
     }
+    if (!finite)
+        acados_status = ACADOS_NAN_DETECTED;
     mem->status = acados_status;
 
     return acados_status;

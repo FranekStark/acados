@@ -45,6 +45,14 @@ extern "C" {
 typedef struct ocp_qp_proxqp_opts_
 {
     proxqp_c_settings settings;
+    // requested tolerances, <= 0 if not set. ProxQP checks the primal and dual residuals
+    // against eps_abs and the duality gap against eps_duality_gap_abs, so eps_abs is the min
+    // of stat/eq/ineq and eps_duality_gap_abs the min of comp/dual_gap.
+    double tol_stat;
+    double tol_eq;
+    double tol_ineq;
+    double tol_comp;
+    double tol_dual_gap;
     int warm_start;  // 1: warm start with the result of the previous solve
     int print_level;
 } ocp_qp_proxqp_opts;
@@ -56,8 +64,6 @@ typedef struct ocp_qp_proxqp_opts_
 // soft constraints form the two-sided inequality constraints l <= C z <= u.
 typedef struct ocp_qp_proxqp_memory_
 {
-    int first_run;
-
     double *g;
     double *b;
     double *l;
@@ -81,14 +87,31 @@ typedef struct ocp_qp_proxqp_memory_
     int *C_p;
     double *C_x;
 
+    // whether the last packed values of P, A and C differ from the ones ProxQP holds
+    int P_changed;
+    int A_changed;
+    int C_changed;
+
+    // sparsity pattern: union of all nonzeros seen so far, one flag per dense entry
+    char *P_mask;   // per stage: triu(RSQ), column-major
+    char *BA_mask;  // per stage k<N: [B A]^T, (nu+nx) x nx[k+1], row-major
+    char *DC_mask;  // per stage: [D C]^T, (nu+nx) x ng, row-major
+    int num_rebuilds;
+
+    // unpack buffer for one row of RSQ, BAbt or DCt
+    double *work_row;
+
     // solution buffers
     double *prim_sol;
     double *y_sol;
     double *z_sol;
     double *constraint_value;  // C * prim_sol, used to prepare the warm start
+    // the last solve succeeded with a finite solution, so it can warm start the next one
+    int solution_is_valid;
 
     // the ProxQP object is opaque and cannot be placed in acados-managed memory;
-    // it is created at the first call and freed in ocp_qp_proxqp_terminate
+    // it is created at the first call, recreated when the sparsity pattern grows,
+    // and freed in ocp_qp_proxqp_terminate
     void *proxqp;
 
     double time_qp_solver_call;
