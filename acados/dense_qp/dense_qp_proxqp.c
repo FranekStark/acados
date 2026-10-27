@@ -191,7 +191,15 @@ void dense_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, voi
     else if (!strcmp(field, "warm_start"))
     {
         int *warm_start = value;
-        opts->warm_start = *warm_start;
+        if (*warm_start >= 0 && *warm_start <= 3)
+        {
+            opts->warm_start = *warm_start;
+        }
+        else
+        {
+            printf("\ndense_qp_proxqp: setting warm_start: supported values are: 0 - cold, 1 - warm, 2, 3 - hot\n");
+            exit(1);
+        }
     }
     else if (!strcmp(field, "print_level"))
     {
@@ -674,13 +682,19 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
         mem->solution_is_valid = 0;
     }
 
-    // per-call settings; warm starting reuses the previous solution and proximal parameters,
-    // but never after a failed or non-finite solve: the cold initial guess also resets the
-    // proximal parameters
+    // per-call settings; warm (level 1) reuses the previous solution but resets the proximal
+    // parameters, hot (level 2 and 3) keeps them as well (as in ocp_qp_proxqp.c), and never after
+    // a failed or non-finite solve
     proxqp_c_settings settings = opts->settings;
     int warm_start = mem->proxqp != NULL && opts->warm_start > 0 && mem->solution_is_valid;
-    if (warm_start)
+    if (warm_start && opts->warm_start >= 2)
+    {
         settings.initial_guess = PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT;
+    }
+    else if (warm_start)
+    {
+        settings.initial_guess = PROXQP_C_COLD_START_WITH_PREVIOUS_RESULT;
+    }
 
     if (mem->proxqp == NULL)
     {

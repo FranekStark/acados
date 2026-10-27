@@ -1021,6 +1021,12 @@ class AcadosOcpOptions:
         - 0: cold
         - 1: warm
 
+        For ProxQP:
+        - 0: cold, ProxQP solves the equality constrained problem for an initial guess
+        - 1: warm, the previous solution is reused, the proximal parameters are reset
+        - 2, 3: hot, the proximal parameters are reused as well.
+          NOTE: ProxQP can report solved for iterates far from optimal in this mode.
+
         Default: 0
         """
         return self.__qp_solver_warm_start
@@ -2591,6 +2597,12 @@ class AcadosOcpQpOptions:
         For OSQP:
         - 0: cold
         - 1: warm
+
+        For ProxQP:
+        - 0: cold, ProxQP solves the equality constrained problem for an initial guess
+        - 1: warm, the previous solution is reused, the proximal parameters are reset
+        - 2, 3: hot, the proximal parameters are reused as well.
+          NOTE: ProxQP can report solved for iterates far from optimal in this mode.
 
         Default: 0
         """

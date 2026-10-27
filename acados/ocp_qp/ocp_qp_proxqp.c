@@ -789,7 +789,15 @@ void ocp_qp_proxqp_opts_set(void *config_, void *opts_, const char *field, void 
     else if (!strcmp(field, "warm_start"))
     {
         int *warm_start = value;
-        opts->warm_start = *warm_start;
+        if (*warm_start >= 0 && *warm_start <= 3)
+        {
+            opts->warm_start = *warm_start;
+        }
+        else
+        {
+            printf("\nocp_qp_proxqp: setting warm_start: supported values are: 0 - cold, 1 - warm, 2, 3 - hot\n");
+            exit(1);
+        }
     }
     else if (!strcmp(field, "print_level"))
     {
@@ -1263,9 +1271,17 @@ int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void 
     }
     else
     {
-        // warm starting reuses the previous solution and proximal parameters
-        if (warm_start)
+        // warm (level 1) reuses the previous solution but resets the proximal parameters; hot
+        // (level 2 and 3) keeps them as well, which made ProxQP report solved for iterates far
+        // from optimal
+        if (warm_start && opts->warm_start >= 2)
+        {
             settings.initial_guess = PROXQP_C_WARM_START_WITH_PREVIOUS_RESULT;
+        }
+        else if (warm_start)
+        {
+            settings.initial_guess = PROXQP_C_COLD_START_WITH_PREVIOUS_RESULT;
+        }
         proxqp_c_sparse_apply_settings(mem->proxqp, &settings);
         // matrices whose values did not change are not passed, ProxQP keeps them
         if (proxqp_c_sparse_update(mem->proxqp,
