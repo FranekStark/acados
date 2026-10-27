@@ -45,4 +45,4 @@
 [submodule "external/proxsuite"]
 	path = external/proxsuite
 	url = https://github.com/FranekStark/proxsuite.git
-	branch = fix/primal-infeasibility-lower-bound-sign
+	branch = acados
