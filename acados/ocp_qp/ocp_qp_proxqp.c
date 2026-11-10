@@ -664,6 +664,43 @@ static int all_finite(int n, const double *v)
 
 
 
+static int any_nan(int n, const double *v)
+{
+    for (int ii = 0; ii < n; ii++)
+    {
+        if (isnan(v[ii]))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+
+// ProxQP keeps iterating on non-finite data: it has no effective iteration limit there, so a
+// single NaN costs max_iter * max_iter_in inner iterations before the solution is checked.
+// The bounds are only tested for NaN, because masked bounds are +-proxqp_c_infinity().
+static int qp_data_is_valid(int n, int m_eq, int m_in, const ocp_qp_proxqp_memory *mem)
+{
+    if (!all_finite(mem->P_p[n], mem->P_x) || !all_finite(n, mem->g))
+    {
+        return 0;
+    }
+    if (m_eq > 0 && (!all_finite(mem->A_p[n], mem->A_x) || !all_finite(m_eq, mem->b)))
+    {
+        return 0;
+    }
+    if (m_in > 0 && (!all_finite(mem->C_p[n], mem->C_x) ||
+                     any_nan(m_in, mem->l) || any_nan(m_in, mem->u)))
+    {
+        return 0;
+    }
+    return 1;
+}
+
+
+
 /************************************************
  * opts
  ************************************************/
@@ -1188,6 +1225,8 @@ static void prune_warm_start_multipliers(int n, int m_in, double tol, ocp_qp_pro
 
 
 // Creates a ProxQP solver for the structure of the last pack_matrices, replacing a previous one.
+
+
 static void setup_solver(int n, int m_eq, int m_in, const proxqp_c_settings *settings,
                          const ocp_qp_proxqp_opts *opts, ocp_qp_proxqp_memory *mem)
 {
@@ -1252,6 +1291,20 @@ int ocp_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, void 
     }
     update_bounds(qp_in, mem);
     update_gradient(qp_in, mem);
+
+    if (!qp_data_is_valid(n, m_eq, m_in, mem))
+    {
+        mem->solution_is_valid = 0;
+        mem->iter = 0;
+        mem->time_qp_solver_call = 0.0;
+        mem->status = ACADOS_NAN_DETECTED;
+        info->interface_time = acados_toc(&interface_timer);
+        info->solve_QP_time = 0.0;
+        info->total_time = acados_toc(&tot_timer);
+        info->num_iter = 0;
+        info->t_computed = 0;
+        return ACADOS_NAN_DETECTED;
+    }
 
     // never warm start from a failed or non-finite solve: the cold initial guess also resets
     // the proximal parameters, which the warm start would carry over

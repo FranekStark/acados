@@ -458,6 +458,49 @@ static int all_finite(int n, const double *v)
 
 
 
+static int any_nan(int n, const double *v)
+{
+    for (int ii = 0; ii < n; ii++)
+    {
+        if (isnan(v[ii]))
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
+// ProxQP keeps iterating on non-finite data: it has no effective iteration limit there, so a
+// single NaN costs max_iter * max_iter_in inner iterations before the solution is checked.
+// The bounds are only tested for NaN, because masked bounds are +-proxqp_c_infinity().
+// See ocp_qp_proxqp.c: a multiplier pointing at a masked (infinite) bound is not a KKT point.
+
+
+static int qp_data_is_valid(int nv2, int ne, int ng2, const dense_qp_proxqp_memory *mem)
+{
+    if (!all_finite(nv2 * nv2, mem->H) || !all_finite(nv2, mem->g))
+    {
+        return 0;
+    }
+    if (ne > 0 && (!all_finite(ne * nv2, mem->A) || !all_finite(ne, mem->b)))
+    {
+        return 0;
+    }
+    if (ng2 > 0 && (!all_finite(ng2 * nv2, mem->C) ||
+                    any_nan(ng2, mem->d_lg) || any_nan(ng2, mem->d_ug)))
+    {
+        return 0;
+    }
+    if (any_nan(nv2, mem->l_box) || any_nan(nv2, mem->u_box))
+    {
+        return 0;
+    }
+    return 1;
+}
+
+
+
 static void fill_in_qp_out(dense_qp_in *qp_in, dense_qp_out *qp_out, dense_qp_proxqp_memory *mem,
                            int nv2, int ng2, int nb2, const int *idxb2)
 {
@@ -672,6 +715,20 @@ int dense_qp_proxqp(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
     {
         mem->l_box[idxb2[ii]] = mem->d_lb0[ii];
         mem->u_box[idxb2[ii]] = mem->d_ub0[ii];
+    }
+
+    if (!qp_data_is_valid(nv2, ne, ng2, mem))
+    {
+        mem->solution_is_valid = 0;
+        mem->iter = 0;
+        mem->time_qp_solver_call = 0.0;
+        mem->status = ACADOS_NAN_DETECTED;
+        info->interface_time = acados_toc(&interface_timer);
+        info->solve_QP_time = 0.0;
+        info->total_time = acados_toc(&tot_timer);
+        info->num_iter = 0;
+        info->t_computed = 0;
+        return ACADOS_NAN_DETECTED;
     }
 
     // the dense backend is fixed when the ProxQP object is created
