@@ -205,7 +205,8 @@ static void update_gradient(const ocp_qp_in *in, ocp_qp_clarabel_memory *mem)
 
 
 
-static void update_hessian_structure(const ocp_qp_in *in, ocp_qp_clarabel_memory *mem)
+// sparsity_qp: sparsity pattern of the QP, NULL if all entries are kept
+static void update_hessian_structure(const ocp_qp_in *in, const ocp_qp_in *sparsity_qp, ocp_qp_clarabel_memory *mem)
 {
     ocp_qp_dims *dims = in->dim;
 
@@ -217,20 +218,27 @@ static void update_hessian_structure(const ocp_qp_in *in, ocp_qp_clarabel_memory
     int ii, jj, kk;
 
     // CSC format: P_rowval are row indices and P_col_ptr are column pointers
+    // nn is the index of the next entry in P_nzval and P_rowval
+    // col is the index of the column in P
+    // offset is the row of P where the current block starts (RSQ[kk], then Z[kk])
     int nn = 0, offset = 0, col = 0;
     for (kk = 0; kk <= N; kk++)
     {
         // write triu(RSQ[kk])
-        for (jj = 0; jj < nx[kk] + nu[kk]; jj++)
+        for (jj = 0; jj < nx[kk] + nu[kk]; jj++) // column jj of P in stage kk, which is row jj of RSQrq
         {
             mem->P_col_ptr[col] = nn;
             col++;
 
-            for (ii = 0; ii <= jj; ii++)
+            for (ii = 0; ii <= jj; ii++) // row ii of P in stage kk, which is column ii of RSQrq
             {
                 // we write only the upper triangular part
-                mem->P_rowval[nn] = offset + ii;
-                nn++;
+                if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->RSQrq+kk, jj, ii) != 0.0)
+                {
+                    // row in P: start of the block + row inside the block
+                    mem->P_rowval[nn] = offset + ii;
+                    nn++;
+                }
             }
         }
         offset += nx[kk] + nu[kk];
@@ -265,33 +273,40 @@ static void update_hessian_data(const ocp_qp_in *in, ocp_qp_clarabel_memory *mem
     int *nu = dims->nu;
     int *ns = dims->ns;
 
-    int ii, kk;
+    int ii, jj, kk;
 
-    // Traversing the matrix in column-major order
-    int nn = 0;
+    // the row indices in P_rowval tell which entries of RSQ are stored
+    // nn, col and offset as in update_hessian_structure
+    int nn, offset = 0, col = 0;
     for (kk = 0; kk <= N; kk++)
     {
         // writing RSQ[kk]
-        // we write the lower triangular part in row-major order
-        // that's the same as writing the upper triangular part in
-        // column-major order
-        for (ii = 0; ii < nx[kk] + nu[kk]; ii++)
+        // column jj of the upper triangular part is row jj of the lower triangular part
+        for (jj = 0; jj < nx[kk] + nu[kk]; jj++)
         {
-            blasfeo_unpack_dmat(1, ii+1, in->RSQrq+kk, ii, 0, mem->P_nzval+nn, 1);
-            nn += ii+1;
+            for (nn = mem->P_col_ptr[col]; nn < (int) mem->P_col_ptr[col+1]; nn++)
+            {
+                // row of this entry inside the block RSQrq of stage kk: row in P - start of the block
+                ii = (int) mem->P_rowval[nn] - offset;
+                mem->P_nzval[nn] = BLASFEO_DMATEL(in->RSQrq+kk, jj, ii);
+            }
+            col++;
         }
+        offset += nx[kk] + nu[kk];
 
-        // write Z[kk]
-        blasfeo_unpack_dvec(2*ns[kk], in->Z+kk, 0, mem->P_nzval+nn, 1);
-        nn += 2*ns[kk];
+        // write Z[kk]: one diagonal entry per slack
+        blasfeo_unpack_dvec(2*ns[kk], in->Z+kk, 0, mem->P_nzval + mem->P_col_ptr[col], 1);
+        col += 2*ns[kk];
+        offset += 2*ns[kk];
     }
-
-    // TODO ? check that nn==mem->P_nnz
 }
 
 
 
-static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clarabel_memory *mem)
+// sparsity_qp: sparsity pattern of the QP, NULL if all entries are kept
+// Writes also the values of the constant entries (identity of the dynamics).
+// update_constraints_matrix_data relies on the order of the entries inside a column.
+static void update_constraints_matrix_structure(const ocp_qp_in *in, const ocp_qp_in *sparsity_qp, ocp_qp_clarabel_memory *mem)
 {
     ocp_qp_dims *dims = in->dim;
 
@@ -341,9 +356,12 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clar
                 // write column from B
                 for (ii = 0; ii < nx[kk+1]; ii++)
                 {
-                    mem->A_rowval[nn+ii] = row_offset_dyn + ii;
+                    if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->BAbt+kk, jj, ii) != 0.0)
+                    {
+                        mem->A_rowval[nn] = row_offset_dyn + ii;
+                        nn++;
+                    }
                 }
-                nn += nx[kk+1];
             }
 
             // write bound on u (upper and lower)
@@ -359,13 +377,25 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clar
                 }
             }
 
-            // write column from D (upper and lower)
+            // write column from D (lower)
             for (ii = 0; ii < ng[kk]; ii++)
             {
-                mem->A_rowval[nn+ii] = con_start + row_offset_con + nb[kk] + ii;
-                mem->A_rowval[nn+ng[kk]+ii] = con_start + row_offset_con + 2*nb[kk] + ng[kk] + ii;
+                if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->DCt+kk, jj, ii) != 0.0)
+                {
+                    mem->A_rowval[nn] = con_start + row_offset_con + nb[kk] + ii;
+                    nn++;
+                }
             }
-            nn += 2*ng[kk];
+
+            // write column from D (upper)
+            for (ii = 0; ii < ng[kk]; ii++)
+            {
+                if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->DCt+kk, jj, ii) != 0.0)
+                {
+                    mem->A_rowval[nn] = con_start + row_offset_con + 2*nb[kk] + ng[kk] + ii;
+                    nn++;
+                }
+            }
         }
 
         // state variables
@@ -378,6 +408,7 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clar
             {
                 // write column from -I
                 mem->A_rowval[nn] = row_offset_dyn - nx[kk] + jj;
+                mem->A_nzval[nn] = -1.0;
                 nn++;
             }
 
@@ -386,9 +417,12 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clar
                 // write column from A
                 for (ii = 0; ii < nx[kk + 1]; ii++)
                 {
-                    mem->A_rowval[nn+ii] = row_offset_dyn + ii;
+                    if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->BAbt+kk, nu[kk]+jj, ii) != 0.0)
+                    {
+                        mem->A_rowval[nn] = row_offset_dyn + ii;
+                        nn++;
+                    }
                 }
-                nn += nx[kk+1];
             }
 
             // write bound on x (upper and lower)
@@ -404,13 +438,25 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clar
                 }
             }
 
-            // write column from C (upper and lower)
+            // write column from C (lower)
             for (ii = 0; ii < ng[kk]; ii++)
             {
-                mem->A_rowval[nn+ii] = con_start + row_offset_con + nb[kk] + ii;
-                mem->A_rowval[nn+ng[kk]+ii] = con_start + row_offset_con + 2*nb[kk] + ng[kk] + ii;
+                if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->DCt+kk, nu[kk]+jj, ii) != 0.0)
+                {
+                    mem->A_rowval[nn] = con_start + row_offset_con + nb[kk] + ii;
+                    nn++;
+                }
             }
-            nn += 2*ng[kk];
+
+            // write column from C (upper)
+            for (ii = 0; ii < ng[kk]; ii++)
+            {
+                if (sparsity_qp == NULL || BLASFEO_DMATEL(sparsity_qp->DCt+kk, nu[kk]+jj, ii) != 0.0)
+                {
+                    mem->A_rowval[nn] = con_start + row_offset_con + 2*nb[kk] + ng[kk] + ii;
+                    nn++;
+                }
+            }
         }
 
         // slack variables on lower inequalities
@@ -470,7 +516,8 @@ static void update_constraints_matrix_structure(const ocp_qp_in *in, ocp_qp_clar
 
 
 
-// TODO move constant stuff like I to structure routine
+// The row indices in A_rowval tell which entries of BAbt and DCt are stored.
+// The constant entries are written in update_constraints_matrix_structure.
 static void update_constraints_matrix_data(const ocp_qp_in *in, ocp_qp_clarabel_memory *mem)
 {
     ocp_qp_dims *dims = in->dim;
@@ -484,85 +531,87 @@ static void update_constraints_matrix_data(const ocp_qp_in *in, ocp_qp_clarabel_
 
     int ii, jj, kk;
 
+    int con_start = 0;
+    for (kk = 0; kk < N; kk++)
+    {
+        con_start += nx[kk+1];
+    }
 
     // entries of inequality rows are multiplied by their mask, see update_bounds for masked rows
-    // Traverse matrix in column-major order
-    int nn = 0;
+    // nn is the index of the entry in A_nzval and A_rowval, col is the index of the column in A
+    int nn, col = 0;
+    int row_offset_dyn = 0;
+    int row_offset_con = 0;
     for (kk = 0; kk <= N; kk++)
     {
-        // control variables
-        for (jj = 0; jj < nu[kk]; jj++)
+        // rows of stage kk: dynamics, lower bounds, lower general constraints, upper bounds, upper general constraints
+        int dyn_start = row_offset_dyn;
+        int dyn_end = row_offset_dyn;
+        if (kk < N)
         {
-            if (kk < dims->N)
-            {
-                // write column from B
-                blasfeo_unpack_dmat(1, nx[kk+1], in->BAbt+kk, jj, 0, mem->A_nzval+nn, 1);
-                nn += nx[kk+1];
-            }
-
-            // write bound on u
-            for (ii = 0; ii < dims->nb[kk]; ii++)
-            {
-                if (in->idxb[kk][ii] == jj)
-                {
-                    mem->A_nzval[nn] = -BLASFEO_DVECEL(in->d_mask+kk, ii); // lower bound
-                    nn++;
-                    mem->A_nzval[nn] = BLASFEO_DVECEL(in->d_mask+kk, nb[kk]+ng[kk]+ii); // upper bound
-                    nn++;
-                    break;
-                }
-            }
-
-            // write column from D
-            blasfeo_unpack_dmat(1, ng[kk], in->DCt+kk, jj, 0, mem->A_nzval+nn+ng[kk], 1);
-            for (ii=0; ii<ng[kk]; ii++)
-            {
-                mem->A_nzval[nn+ii] = - mem->A_nzval[nn+ng[kk]+ii] * BLASFEO_DVECEL(in->d_mask+kk, nb[kk]+ii);
-                mem->A_nzval[nn+ng[kk]+ii] *= BLASFEO_DVECEL(in->d_mask+kk, 2*nb[kk]+ng[kk]+ii);
-            }
-            nn += 2*ng[kk];
+            dyn_end += nx[kk+1];
         }
+        int lb_start = con_start + row_offset_con;
+        int lg_start = lb_start + nb[kk];
+        int lg_end = lg_start + ng[kk];
+        int ug_start = lg_end + nb[kk];
 
-        // state variables
-        for (jj = 0; jj < nx[kk]; jj++)
+        // control and state variables: column jj holds row jj of BAbt and of DCt
+        for (jj = 0; jj < nu[kk] + nx[kk]; jj++)
         {
-            if (kk > 0)
+            int col_end = (int) mem->A_col_ptr[col+1];
+            nn = (int) mem->A_col_ptr[col];
+
+            // skip -I: at most one entry
+            while (nn < col_end && (int) mem->A_rowval[nn] < dyn_start)
             {
-                // write column from -I
-                mem->A_nzval[nn] = -1.0;
                 nn++;
             }
 
-            if (kk < N)
+            // write column from B or A
+            while (nn < col_end && (int) mem->A_rowval[nn] < dyn_end)
             {
-                // write column from A
-                blasfeo_unpack_dmat(1, nx[kk+1], in->BAbt+kk, nu[kk]+jj, 0, mem->A_nzval+nn, 1);
-                nn += nx[kk+1];
+                // row of this entry inside the dynamics of stage kk, i.e. column of BAbt
+                ii = (int) mem->A_rowval[nn] - dyn_start;
+                mem->A_nzval[nn] = BLASFEO_DMATEL(in->BAbt+kk, jj, ii);
+                nn++;
             }
 
-            // write bound on x
-            for (ii = 0; ii < nb[kk]; ii++)
+            // write bound on u or x: the entry of the lower bound is followed by the one of the upper bound
+            if (nn < col_end && (int) mem->A_rowval[nn] < lg_start)
             {
-                if (in->idxb[kk][ii] == nu[kk] + jj)
-                {
-                    mem->A_nzval[nn] = -BLASFEO_DVECEL(in->d_mask+kk, ii); // lower bound
-                    nn++;
-                    mem->A_nzval[nn] = BLASFEO_DVECEL(in->d_mask+kk, nb[kk]+ng[kk]+ii); // upper bound
-                    nn++;
-                    break;
-                }
+                // index of this bound: row - first row of the lower bounds
+                ii = (int) mem->A_rowval[nn] - lb_start;
+                mem->A_nzval[nn] = -BLASFEO_DVECEL(in->d_mask+kk, ii); // lower bound
+                nn++;
+                mem->A_nzval[nn] = BLASFEO_DVECEL(in->d_mask+kk, nb[kk]+ng[kk]+ii); // upper bound
+                nn++;
             }
 
-            // write column from C
-            blasfeo_unpack_dmat(1, ng[kk], in->DCt+kk, nu[kk]+jj, 0, mem->A_nzval+nn+ng[kk], 1);
-            for (ii=0; ii<ng[kk]; ii++)
+            // write column from D or C (lower)
+            while (nn < col_end && (int) mem->A_rowval[nn] < lg_end)
             {
-                mem->A_nzval[nn+ii] = - mem->A_nzval[nn+ng[kk]+ii] * BLASFEO_DVECEL(in->d_mask+kk, nb[kk]+ii);
-                mem->A_nzval[nn+ng[kk]+ii] *= BLASFEO_DVECEL(in->d_mask+kk, 2*nb[kk]+ng[kk]+ii);
+                // general constraint of this entry, i.e. column of DCt
+                ii = (int) mem->A_rowval[nn] - lg_start;
+                mem->A_nzval[nn] = -BLASFEO_DMATEL(in->DCt+kk, jj, ii) * BLASFEO_DVECEL(in->d_mask+kk, nb[kk]+ii);
+                nn++;
             }
-            nn += 2*ng[kk];
 
+            // write column from D or C (upper): the rest of the column
+            while (nn < col_end)
+            {
+                // general constraint of this entry, i.e. column of DCt
+                ii = (int) mem->A_rowval[nn] - ug_start;
+                mem->A_nzval[nn] = BLASFEO_DMATEL(in->DCt+kk, jj, ii) * BLASFEO_DVECEL(in->d_mask+kk, 2*nb[kk]+ng[kk]+ii);
+                nn++;
+            }
+
+            col++;
         }
+
+        // slack variables: all entries of these columns are written
+        nn = (int) mem->A_col_ptr[col];
+        col += 2*ns[kk];
 
         // slack variables on lower inequalities
         for (jj = 0; jj < ns[kk]; jj++)
@@ -604,9 +653,9 @@ static void update_constraints_matrix_data(const ocp_qp_in *in, ocp_qp_clarabel_
             nn++;
         }
 
+        row_offset_dyn = dyn_end;
+        row_offset_con += 2*nb[kk]+2*ng[kk];
     }
-
-    // TODO ? check that nn==mem->A_nnz
 }
 
 
@@ -729,8 +778,14 @@ static void ocp_qp_clarabel_update_memory(const ocp_qp_in *in, const ocp_qp_clar
 {
     if (opts->first_run)
     {
-        update_hessian_structure(in, mem);
-        update_constraints_matrix_structure(in, mem);
+        // sparsity pattern of the QP; without one, all entries are kept
+        ocp_qp_in *sparsity_qp = NULL;
+        if (in->misc != NULL)
+        {
+            sparsity_qp = ((qp_in_info *) in->misc)->sparsity_pattern;
+        }
+        update_hessian_structure(in, sparsity_qp, mem);
+        update_constraints_matrix_structure(in, sparsity_qp, mem);
     }
 
     update_hessian_data(in, mem);
@@ -1132,6 +1187,18 @@ int ocp_qp_clarabel(void *config_, void *qp_in_, void *qp_out_, void *opts_, voi
     // cast data structures
     ocp_qp_clarabel_opts *opts = (ocp_qp_clarabel_opts *) opts_;
     ocp_qp_clarabel_memory *mem = (ocp_qp_clarabel_memory *) mem_;
+
+    // the sparsity pattern is used in the first run, when the matrix structure is built
+    qp_in_info *in_info = (qp_in_info *) qp_in->misc;
+    if (in_info != NULL && in_info->sparsity_pattern_updated)
+    {
+        if (!opts->first_run)
+        {
+            printf("\nerror: ocp_qp_clarabel: changing the sparsity pattern after the first solve is not supported yet.\n");
+            exit(1);
+        }
+        in_info->sparsity_pattern_updated = 0;
+    }
 
     acados_tic(&interface_timer);
     ocp_qp_clarabel_update_memory(qp_in, opts, mem);

@@ -11,7 +11,10 @@ import numpy as np
 N_HORIZON = 20
 SPARSITY_FIELDS = ['A', 'B', 'Q', 'R', 'S', 'C', 'D']
 # solvers that use the sparsity pattern
-SOLVERS = ['PARTIAL_CONDENSING_OSQP']
+SOLVERS = ['PARTIAL_CONDENSING_OSQP', 'PARTIAL_CONDENSING_CLARABEL']
+# allowed difference to the reference solution of HPIPM.
+# NOTE: Clarabel stops on the duality gap, which bounds the error of the cost, not the one of the solution.
+TOL_REFERENCE = {'PARTIAL_CONDENSING_OSQP': 1e-4, 'PARTIAL_CONDENSING_CLARABEL': 1e-2}
 N_TIMING_SOLVES = 5
 # longer chains show larger speedups, but take minutes: 30 masses and more are left out here
 N_MASS_VALUES = [3, 10, 20]
@@ -178,7 +181,7 @@ def run_same_solution_case(qp_solver: str, n_mass: int, soft: bool, cond_N: int)
         diff = max_difference(sol, solutions['no sparsity'])
         assert diff < 1e-6, f"{case}: solution with {name} differs by {diff:.2e} from the one without sparsity for {qp_solver}"
         diff_ref[name] = max_difference(sol, ref)
-        assert diff_ref[name] < 1e-4, f"{case}: solution with {name} differs by {diff_ref[name]:.2e} from the reference for {qp_solver}"
+        assert diff_ref[name] < TOL_REFERENCE[qp_solver], f"{case}: solution with {name} differs by {diff_ref[name]:.2e} from the reference for {qp_solver}"
 
     times = {name: median_solve_time(solver) for name, solver in solvers.items()}
     time_hpipm = median_solve_time(create_solver(qp, 'PARTIAL_CONDENSING_HPIPM', cond_N))
